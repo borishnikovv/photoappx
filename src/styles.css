@@ -349,3 +349,9 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
 .thumbs { display: inline-flex; gap: 0; }
 .thumbs .btn { filter: grayscale(1); opacity: .5; font-size: 12px; }
 .thumbs .btn[aria-pressed='true'] { filter: none; opacity: 1; background: var(--bg-2); }
+
+/* Tilt questions: each photo can be straightened, kept as shot, or skipped */
+.tilt-opt { display: grid; gap: 6px; align-content: start; }
+.ask-options .tilt-opt .skip { padding: 6px 10px; border-radius: 999px; justify-self: center; font-size: 12px; }
+.tilt-opt.skip > button:first-child { opacity: 0.35; }
+.tilt-opt .skip[aria-pressed='true'] { color: var(--bad); border-color: var(--bad); }

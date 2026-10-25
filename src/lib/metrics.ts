@@ -210,7 +210,7 @@ export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { 
   //    with a clear change above vs. below it (sky/land, land/water). Objects can lean; it can't.
   const sideMeans = (l: Line) => {
     const t = ((l.dev * Math.PI) / 180), c = Math.cos(t), sn = Math.sin(t);
-    let up = 0, down = 0, k = 0;
+    let up = 0, down = 0, k = 0, roughUp = 0, roughDown = 0, edge = 0;
     for (let x = 4; x < w - 4; x += 4) {
       const px = x - cx;
       const y = cy + (l.offset + px * sn) / c;
@@ -218,14 +218,28 @@ export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { 
       if (ya < 0 || yb >= h) continue;
       up += lum[ya * w + x];
       down += lum[yb * w + x];
+      // Whether the edge is really there at this point (a horizon runs across the whole frame;
+      // an object's edge stops where the object ends).
+      if (Math.abs(lum[Math.round(y - 4) * w + x] - lum[Math.round(y + 4) * w + x]) > 10) edge++;
+      // Texture just above and below: a real horizon has a calm side (sky, water, haze).
+      for (const d of [8, 14, 20]) {
+        const ra = Math.round(y - d), rb = Math.round(y + d);
+        if (ra >= 0) roughUp += Math.abs(lum[ra * w + x + 1] - lum[ra * w + x - 1]);
+        if (rb < h) roughDown += Math.abs(lum[rb * w + x + 1] - lum[rb * w + x - 1]);
+      }
       k++;
     }
-    return k ? { contrast: Math.abs(up - down) / k / 255, coverage: (k * 4) / w } : { contrast: 0, coverage: 0 };
+    const calm = Math.min(roughUp, roughDown) / Math.max(1e-6, roughUp, roughDown);
+    // …and a textured side (land, waves, trees): an edge between two plain areas is an object.
+    const texture = k ? Math.max(roughUp, roughDown) / (3 * k) : 0;
+    return k
+      ? { contrast: Math.abs(up - down) / k / 255, coverage: (k * 4) / w, calm, texture, across: edge / k }
+      : { contrast: 0, coverage: 0, calm: 1, texture: 0, across: 0 };
   };
   const horizons = lines
-    .filter((l) => !l.vertical && l.len >= 0.4 * w)
+    .filter((l) => !l.vertical && l.len >= 0.45 * w)
     .map((l) => ({ l, ...sideMeans(l) }))
-    .filter((x) => x.contrast >= 0.06 && x.coverage >= 0.6 && Math.abs(x.l.offset) < 0.4 * h)
+    .filter((x) => x.contrast >= 0.06 && x.coverage >= 0.6 && Math.abs(x.l.offset) < 0.4 * h && x.calm < 0.75 && x.texture >= 0.8 && x.across >= 0.7)
     .sort((a, b) => b.l.len * b.contrast - a.l.len * a.contrast);
   if (debug) Object.assign(debug, { lines: lines.slice(0, 12), thresh, horizon: horizons[0] });
   if (horizons.length) {

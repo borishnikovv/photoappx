@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store';
-import { innerScale } from '../lib/straighten';
+import { innerScale, previewLevel } from '../lib/straighten';
 import type { Photo } from '../types';
 
 /** The thumbnail rotated and cropped the way straightening would, as a cheap preview. */
@@ -13,6 +13,26 @@ export function Leveled({ p, angle }: { p: Photo; angle: number }) {
     </div>
   );
 }
+
+/** Exact preview (tilt and skew) when skew is involved, which a CSS rotation can't show. */
+function Fixed({ p, angle, keystone }: { p: Photo; angle: number; keystone?: number }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!keystone) return;
+    let live = true;
+    previewLevel(p.thumb, angle, keystone).then((u) => (live ? setUrl(u) : URL.revokeObjectURL(u)));
+    return () => {
+      live = false;
+    };
+  }, [p.thumb, angle, keystone]);
+  useEffect(() => () => void (url && URL.revokeObjectURL(url)), [url]);
+  if (!keystone) return <Leveled p={p} angle={angle} />;
+  return url ? <img src={url} alt="" /> : <img src={p.thumb} alt="" style={{ opacity: 0.4 }} />;
+}
+
+/** What a fix does, in a few words. */
+const fixLabel = (angle: number, keystone?: number) =>
+  [Math.abs(angle) >= 0.05 && `Level ${Math.abs(angle).toFixed(1)}°`, keystone && `skew ${Math.abs(keystone).toFixed(1)}°`].filter(Boolean).join(' · ') || 'Straighten';
 
 export function AskModal({ onDone }: { onDone: () => void }) {
   const { decisions, byId, resolve, setAskOpen, answered, undoAnswer } = useStore();
@@ -30,7 +50,9 @@ export function AskModal({ onDone }: { onDone: () => void }) {
   // (After "Back", the restored question comes first.)
   const d = decisions[0]?.kind === 'pick' ? decisions[0] : decisions.find((x) => x.kind === 'pick') ?? decisions[0];
   const tilts = decisions.filter((x): x is Extract<typeof x, { kind: 'straighten' }> => x.kind === 'straighten');
-  const [off, setOff] = useState<Set<string>>(new Set());
+  // Each tilt question: straighten (default), keep as shot, or leave the photo out.
+  const [state, setState] = useState<Map<string, 'fix' | 'keep' | 'skip'>>(new Map());
+  const stateOf = (id: string) => state.get(id) ?? 'fix';
 
   useEffect(() => {
     if (!d) onDone();
@@ -48,7 +70,10 @@ export function AskModal({ onDone }: { onDone: () => void }) {
   const step = total - decisions.length + 1;
   const applyTilts = async () => {
     setBusy(true);
-    for (const t of tilts) await resolve(t.id, !off.has(t.id));
+    for (const t of tilts) {
+      const v = stateOf(t.id);
+      await resolve(t.id, v === 'skip' ? 'skip' : v === 'fix');
+    }
     setBusy(false);
   };
 
@@ -61,7 +86,7 @@ export function AskModal({ onDone }: { onDone: () => void }) {
         {d.kind === 'pick' ? (
           <>
             <h2>These are nearly tied. Which one?</h2>
-            <p className="dim">Similar shots scored within a few points. Tap the one to keep.</p>
+            <p className="dim">Similar shots scored within a few points. Tap the one to keep, or skip them all.</p>
             <div className={`ask-options n${d.options.length}`}>
               {d.options.map((id) => {
                 const p = byId.get(id)!;
@@ -81,30 +106,32 @@ export function AskModal({ onDone }: { onDone: () => void }) {
           <>
             <h2>Straighten these?</h2>
             <p className="dim">
-              These look off level. Tap any you'd rather keep as shot (a deliberate angle, say), then apply.
+              These look off level. Tap a photo to keep it as shot (a deliberate angle, say), or skip it to leave it out, then apply.
             </p>
             <div className="ask-options n3">
               {tilts.map((t) => {
                 const p = byId.get(t.photoId)!;
-                const on = !off.has(t.id);
+                const v = stateOf(t.id);
                 return (
-                  <button
-                    key={t.id}
-                    disabled={busy}
-                    aria-pressed={on}
-                    className={on ? 'on' : 'off'}
-                    onClick={() =>
-                      setOff((o) => {
-                        const x = new Set(o);
-                        if (x.has(t.id)) x.delete(t.id);
-                        else x.add(t.id);
-                        return x;
-                      })
-                    }
-                  >
-                    {on ? <Leveled p={p} angle={t.angle} /> : <img src={p.thumb} alt="" />}
-                    <span className="mono">{on ? `Straighten ${Math.abs(t.angle).toFixed(1)}°` : 'Keep as shot'}</span>
-                  </button>
+                  <div key={t.id} className={`tilt-opt ${v}`}>
+                    <button
+                      disabled={busy}
+                      aria-pressed={v === 'fix'}
+                      className={v === 'fix' ? 'on' : 'off'}
+                      onClick={() => setState((m) => new Map(m).set(t.id, v === 'fix' ? 'keep' : 'fix'))}
+                    >
+                      {v === 'fix' ? <Fixed p={p} angle={t.angle} keystone={t.keystone} /> : <img src={p.thumb} alt="" />}
+                      <span className="mono">{v === 'fix' ? fixLabel(t.angle, t.keystone) : v === 'keep' ? 'Keep as shot' : 'Left out'}</span>
+                    </button>
+                    <button
+                      className="btn ghost sm skip"
+                      disabled={busy}
+                      aria-pressed={v === 'skip'}
+                      onClick={() => setState((m) => new Map(m).set(t.id, v === 'skip' ? 'fix' : 'skip'))}
+                    >
+                      {v === 'skip' ? 'Use it' : 'Skip photo'}
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -115,22 +142,26 @@ export function AskModal({ onDone }: { onDone: () => void }) {
                 Later
               </button>
               <button className="btn sm primary" disabled={busy} onClick={applyTilts}>
-                {busy ? 'Straightening…' : `Apply (${tilts.length - off.size} straightened)`}
+                {busy ? 'Straightening…' : `Apply (${tilts.filter((t) => stateOf(t.id) === 'fix').length} straightened)`}
               </button>
             </div>
           </>
         ) : (
           <>
             <h2>Straighten this one?</h2>
-            <p className="dim">It looks about {Math.abs(d.angle).toFixed(1)}° off level, but it could be on purpose.</p>
+            <p className="dim">
+              {d.keystone && Math.abs(d.angle) < 0.05
+                ? 'Its verticals lean (shot looking up or down), but they could be leaning on their own.'
+                : `It looks about ${Math.abs(d.angle).toFixed(1)}° off level, but it could be on purpose.`}
+            </p>
             <div className="ask-options n2">
               <button disabled={busy} onClick={() => choose(false)}>
                 <img src={byId.get(d.photoId)!.thumb} alt="" />
                 <span className="mono">As shot</span>
               </button>
               <button disabled={busy} onClick={() => choose(true)}>
-                <Leveled p={byId.get(d.photoId)!} angle={d.angle} />
-                <span className="mono">Straightened</span>
+                <Fixed p={byId.get(d.photoId)!} angle={d.angle} keystone={d.keystone} />
+                <span className="mono">{fixLabel(d.angle, d.keystone)}</span>
               </button>
             </div>
           </>
@@ -140,6 +171,9 @@ export function AskModal({ onDone }: { onDone: () => void }) {
             {back}
             <button className="btn ghost sm" disabled={busy} onClick={() => choose(d.kind === 'pick' ? d.suggested : false)}>
               {d.kind === 'pick' ? 'Use my pick' : 'Leave as shot'}
+            </button>
+            <button className="btn ghost sm" disabled={busy} onClick={() => choose('skip')} title="Leave out of the carousel">
+              {d.kind === 'pick' ? 'Skip these' : 'Skip photo'}
             </button>
             <span style={{ flex: 1 }} />
             <button className="btn ghost sm" disabled={busy} onClick={skipAll}>

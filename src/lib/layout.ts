@@ -17,6 +17,10 @@ export interface Template {
   hero?: boolean;
   /** Geometry is the point (rows, steps, pairs): don't nudge pieces individually. */
   rigid?: boolean;
+  /** A signature pattern: every carousel that can fit one should show it at least once. */
+  signature?: boolean;
+  /** The backdrop is a ground behind prints, not a picture to see whole. */
+  ground?: boolean;
   build: Build;
 }
 
@@ -30,6 +34,28 @@ const SQ_WIDE: Orientation[] = ['square', 'landscape', 'pano'];
  * don't run so long; everything else keeps its own shape.
  */
 const aspect = (p: Photo) => Math.max(p.width / p.height, 2 / 3);
+/**
+ * Two landscape/square prints stacked in one aligned column, centered on slide `slide`: the same
+ * width, an even gap, the pair centered top to bottom, each with a thin print border.
+ */
+function column(b: Photo, c: Photo, slide: number, r: () => number, o: StyleOptions): Spec[] {
+  // Prints read best landscape: squares get a gentle 5:4 crop, landscapes 4:3 or 3:2.
+  const printAspect = (p: Photo) => {
+    const a = p.width / p.height;
+    if (a < 1.15) return 5 / 4;
+    return [4 / 3, 3 / 2].filter((x) => Math.abs(Math.log(x / a)) < 0.25)[Math.floor(r() * 2)] ?? Math.min(a, 16 / 9);
+  };
+  const ab = printAspect(b), ac = printAspect(c);
+  const gap = 44, margin = 64, border = 10;
+  const maxH = (H - 2 * margin - gap) / 2 - 2 * border;
+  const w = Math.min(W * 0.84, maxH * ab, maxH * ac);
+  const hb = w / ab, hc = w / ac;
+  const top = (H - (hb + hc + gap + 4 * border)) / 2 + border;
+  const x = slide * W + (W - w) / 2;
+  const look = { border, shadow: o.overlay === 'framed' };
+  return [mk(b, x, top, w, hb, { ...look, z: 1 }), mk(c, x, top + hb + 2 * border + gap, w, hc, { ...look, z: 2 })];
+}
+
 const pick = <T,>(r: () => number, xs: T[]) => xs[Math.floor(r() * xs.length)];
 
 /** Focal point: the center of the faces if any were found, else just above center. */
@@ -233,6 +259,20 @@ export const TEMPLATES: Template[] = [
       const pc = placeOver(bg, a, C, straddle(W, C.w), [H - C.h - 90, H - C.h - 140], () => 0);
       return [bg, mk(b, pb.x, pb.y, B.w, B.h, ov(o)), mk(c, pc.x, pc.y, C.w, C.h, ov(o, 2))];
     },
+  },
+  {
+    id: 'column2', label: 'Print column', family: 'layered', span: 1, slots: [ANY, SQ_WIDE, SQ_WIDE], weight: 1.3, rigid: true, ground: true,
+    build: ([a, b, c], r, o) => [mk(a, 0, 0, W, H, { base: true }), ...column(b, c, 0, r, o)],
+  },
+  {
+    id: 'column4', label: 'Print columns ×2', family: 'spread', span: 2, slots: [WIDE, SQ_WIDE, SQ_WIDE, SQ_WIDE, SQ_WIDE], weight: 1.6, rigid: true, signature: true, hero: true, ground: true,
+    // One backdrop across both slides, an aligned pair of prints on each: the album-page spread.
+    build: ([a, b, c, d, e], r, o) => [mk(a, 0, 0, 2 * W, H, { base: true }), ...column(b, c, 0, r, o), ...column(d, e, 1, r, o)],
+  },
+  {
+    id: 'column4-split', label: 'Print columns on two', family: 'layered', span: 2, slots: [TALL, TALL, SQ_WIDE, SQ_WIDE, SQ_WIDE, SQ_WIDE], weight: 1.1, rigid: true, ground: true,
+    // The same with a backdrop per slide, for when no wide photo suits.
+    build: ([a, b, c, d, e, f], r, o) => [mk(a, 0, 0, W, H, { base: true }), mk(b, W, 0, W, H, { base: true }), ...column(c, d, 0, r, o), ...column(e, f, 1, r, o)],
   },
   {
     id: 'split-h', label: 'Split', family: 'gallery', span: 1, slots: [WIDE, WIDE], weight: 0.9,
@@ -544,6 +584,9 @@ function assign(t: Template, cands: Photo[]): Photo[] | null {
     if (slot === t.slots.length) return used.has(0);
     for (let i = 0; i < cands.length; i++) {
       if (used.has(i) || !t.slots[slot].includes(photoOrientation(cands[i]))) continue;
+      // …and no look-alike pairs anywhere in the layout.
+      const ai = cands[i].analysis;
+      if (ai?.grid && out.some((q) => q.analysis?.grid && distance(ai, q.analysis) <= 0.3)) continue;
       used.add(i);
       out.push(cands[i]);
       if (rec(slot + 1)) return true;
@@ -565,7 +608,8 @@ export function buildSection(t: Template, ps: Photo[], r: () => number, o: Style
 export function finishSection(sec: Section, byId: Map<string, Photo>): Section {
   const ps = sec.items.map((i) => byId.get(i.photoId)!).filter(Boolean);
   sec.items = coverSection(sec.items, byId, sec.span);
-  for (const it of sec.items) if (!it.base) growToReadable(it, sec.span);
+  // Print columns are sized as a set (same width, even gaps); growing one would break the column.
+  if (!templateById(sec.template)?.ground) for (const it of sec.items) if (!it.base) growToReadable(it, sec.span);
   for (const it of sec.items) artCrop(it, byId.get(it.photoId)!, sec.span);
   if (!templateById(sec.template)?.rigid) settleOverlays(sec.items, byId);
   keepFacesOffSeams(sec, ps);
@@ -794,6 +838,9 @@ export function scoreSection(sec: Section, byId: Map<string, Photo>) {
   for (const o of ovs)
     for (const b of bases) hidden += coverCost({ x0: o.x, x1: o.x + o.w, y0: o.y, y1: o.y + o.h }, b, byId.get(b.photoId)!) / (o.w * o.h);
   notes.hidden = Math.min(1, hidden / Math.max(1, ovs.length) / 0.9);
+  // Print columns use the backdrop as a ground (a texture behind the prints): covering its
+  // busier parts costs less there, while faces still count in full.
+  if (templateById(sec.template)?.ground && notes.hidden < 0.9) notes.hidden *= 0.4;
   // Overlays covering each other too much.
   let lap = 0;
   for (let i = 0; i < ovs.length; i++)
@@ -910,7 +957,7 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
     let best: { sec: Section; t: Template; ps: Photo[]; v: number } | null = null;
     for (const t of allowed) {
       if (t.span > left) continue;
-      const ps = assign(t, queue.slice(0, t.family === 'spread' ? 7 : 6));
+      const ps = assign(t, queue.slice(0, t.slots.length >= 5 ? 9 : t.family === 'spread' ? 7 : 6));
       if (!ps) continue;
       let w = t.weight * (emph.boost[t.family] ?? 1) * layoutBias(t.id, t.family);
       if (recent[0] === t.id) w *= 0.1;
@@ -918,6 +965,12 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
       // Keep the rhythm varied: a third section in a row from the same family has to earn it.
       if (recentFamilies[0] === t.family && recentFamilies[1] === t.family) w *= 0.55;
       if (sections.length === 0) w *= t.hero ? 1.6 : 0.6;
+      // Signature patterns: strongly wanted once, welcome a second time in a long carousel.
+      if (t.signature) {
+        const seen = sections.filter((x) => x.template === t.id).length;
+        if (!seen) w *= 8;
+        else if (seen === 1 && !recent.slice(0, 3).includes(t.id) && left > 6) w *= 2;
+      }
       // Pace: use photos at the rate that fills the carousel exactly — not faster, not slower.
       const perSlide = ps.length / t.span;
       w *= Math.exp(-1.4 * Math.abs(perSlide - density));

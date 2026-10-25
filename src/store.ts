@@ -155,7 +155,7 @@ export const useStore = create<State>((set, get) => {
     const candidates = photos
       .filter((p) => !used.has(p.id) && !picks.includes(p.id) && p.analysis && !p.analysis.reject && p.analysis.groupBest !== false)
       // Seam photos are never asked about, so skip any that might still be crooked.
-      .filter((p) => p.straightened != null || !tiltVerdict(p.analysis))
+      .filter((p) => p.straightened != null || (!tiltVerdict(p.analysis) && keystoneVerdict(p.analysis) !== 'ask'))
       .sort((a, b) => b.analysis!.score - a.analysis!.score);
     // …and only ones that add something new: not a near-repeat of anything in the carousel or pool.
     const sameScene = sameSceneFor(photos.filter((p) => p.analysis?.grid && !p.analysis.reject).map((p) => p.analysis!));
@@ -308,11 +308,14 @@ export const useStore = create<State>((set, get) => {
       const snapshot = {
         decision: d,
         picks: [...picks],
-        groupBest: d.kind === 'pick' ? photos.filter((p) => p.analysis?.groupId === d.groupId).map((p) => [p.id, p.analysis!.groupBest] as [string, boolean | undefined]) : [],
+        groupBest:
+          d.kind === 'pick'
+            ? photos.filter((p) => p.analysis?.groupId === d.groupId).map((p) => [p.id, p.analysis!.groupBest] as [string, boolean | undefined])
+            : [[d.photoId, byId.get(d.photoId)?.analysis?.groupBest] as [string, boolean | undefined]],
         photo: d.kind === 'straighten' ? byId.get(d.photoId) : undefined,
       };
       set((s) => ({ decisions: s.decisions.filter((x) => x.id !== id), answered: [snapshot, ...s.answered] }));
-      if (d.kind === 'pick' && typeof choice === 'string') {
+      if (d.kind === 'pick' && typeof choice === 'string' && choice !== 'skip') {
         // Swap the chosen frame into the picks where the group's current pick sits.
         for (const p of get().photos) if (p.analysis?.groupId === d.groupId) p.analysis.groupBest = p.id === choice;
         set((s) => {
@@ -323,7 +326,20 @@ export const useStore = create<State>((set, get) => {
           return { picks, photos: [...s.photos] };
         });
       }
-      if (d.kind === 'straighten' && choice === true) await get().setStraight(d.photoId, true);
+      if (choice === 'skip') {
+        // Leave these out of the carousel entirely (and out of later re-picks and seam photos).
+        const out = new Set(d.kind === 'pick' ? d.options : [d.photoId]);
+        for (const id of out) {
+          const a = get().byId.get(id)?.analysis;
+          if (a) a.groupBest = false;
+        }
+        set((s) => ({ picks: s.picks.filter((x) => !out.has(x)), photos: [...s.photos] }));
+        return;
+      }
+      if (d.kind === 'straighten' && choice === true) {
+        const p = get().byId.get(d.photoId);
+        if (p) replacePhoto(d.photoId, await level(p, d.angle, d.keystone ?? 0));
+      }
     },
     undoAnswer: () => {
       const [last, ...rest] = get().answered;
@@ -350,7 +366,7 @@ export const useStore = create<State>((set, get) => {
         set((s) => ({ decisions: s.decisions.filter((d) => !(d.kind === 'straighten' && d.photoId === photoId)) }));
         return;
       }
-      if (on && p.analysis) replacePhoto(photoId, await level(p, p.analysis.tilt ?? 0, keystoneVerdict(p.analysis) === 'fix' ? p.analysis.keystone! : 0));
+      if (on && p.analysis) replacePhoto(photoId, await level(p, p.analysis.tilt ?? 0, keystoneVerdict(p.analysis) ? p.analysis.keystone! : 0));
       if (!on) replacePhoto(photoId, unstraighten(p));
     },
     togglePick: (id) => set((s) => ({ picks: s.picks.includes(id) ? s.picks.filter((x) => x !== id) : [...s.picks, id] })),

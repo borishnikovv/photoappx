@@ -525,10 +525,10 @@ export function tiltVerdict(a?: Analysis): 'fix' | 'ask' | null {
   if (!a?.tilt || a.tiltConfidence == null) return null;
   const t = Math.abs(a.tilt), c = a.tiltConfidence;
   if (t < 0.6 || t > 25) return null;
-  // Only a horizon (or strong, agreeing landscape lines) is trusted to straighten automatically;
-  // angles read from objects might be the object leaning, so those are always asked.
-  if (a.tiltSource === 'horizon' && c >= 0.45 && t <= 12) return 'fix';
-  if (a.tiltSource === 'lines' && c >= 0.6 && t <= 12) return 'fix';
+  // Only a true horizon (a long line with a calm sky or water side) straightens automatically.
+  // Angles from anything else (tree trunks, buildings, furniture) may be the thing itself leaning,
+  // so those are always asked, with a preview.
+  if (a.tiltSource === 'horizon' && c >= 0.5 && t <= 8) return 'fix';
   if (c >= 0.45 || (c >= 0.3 && t >= 1)) return 'ask';
   return null;
 }
@@ -537,11 +537,14 @@ export function tiltVerdict(a?: Analysis): 'fix' | 'ask' | null {
  * Skew (keystone) worth fixing: clear, fanned-out verticals of a building or room. Never on photos
  * with prominent faces — warping people looks wrong.
  */
-export function keystoneVerdict(a?: Analysis): 'fix' | null {
+export function keystoneVerdict(a?: Analysis): 'fix' | 'ask' | null {
   if (!a?.keystone || (a.keystoneConfidence ?? 0) < 0.4) return null;
   const k = Math.abs(a.keystone);
   const faces = (a.faces ?? []).reduce((t, f) => t + f.w * f.h, 0);
-  return k >= 1 && k <= 15 && faces < 0.03 ? 'fix' : null;
+  if (k < 1 || k > 15 || faces >= 0.03) return null;
+  // Only an unmistakable fan of verticals (a building, a room) is corrected automatically; the
+  // edges of objects can lean on their own, so anything less certain is asked.
+  return (a.keystoneConfidence ?? 0) >= 0.85 ? 'fix' : 'ask';
 }
 
 /**
@@ -565,8 +568,10 @@ export function buildDecisions(photos: Photo[], picks: string[]): Decision[] {
   }
   for (const id of picks) {
     const p = photos.find((x) => x.id === id);
-    if (p && !p.straightened && tiltVerdict(p.analysis) === 'ask')
-      out.push({ id: `tilt_${id}`, kind: 'straighten', photoId: id, angle: p.analysis!.tilt! });
+    if (!p || p.straightened != null) continue;
+    const tilt = tiltVerdict(p.analysis) === 'ask', skew = keystoneVerdict(p.analysis) === 'ask';
+    if (tilt || skew)
+      out.push({ id: `tilt_${id}`, kind: 'straighten', photoId: id, angle: tilt ? p.analysis!.tilt! : 0, keystone: skew ? p.analysis!.keystone : undefined });
   }
   return out;
 }

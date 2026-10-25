@@ -62,7 +62,7 @@ export interface Photo {
 
 export type Decision =
   | { id: string; kind: 'pick'; groupId: string; options: string[]; suggested: string }
-  | { id: string; kind: 'straighten'; photoId: string; angle: number };
+  | { id: string; kind: 'straighten'; photoId: string; angle: number; keystone?: number };
 
 export interface Crop {
   /** Focal center of the visible window, normalized in photo space. */
