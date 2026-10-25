@@ -14,10 +14,9 @@ export default async function handler(req) {
   if (u.protocol !== 'https:' || !/(^|\.)googleusercontent\.com$/.test(u.hostname)) {
     return new Response('Forbidden host', { status: 403 });
   }
-  // Picker downloads carry the user's token; shared-album images (/pw/) are public and don't.
+  // Picker downloads carry the user's token; shared-album images are public and don't.
   const auth = req.headers.get('authorization');
-  if (!auth && !u.pathname.startsWith('/pw/')) return new Response('Missing token', { status: 401 });
-  const r = await fetch(u, { headers: auth ? { Authorization: auth } : {} });
+    const r = await fetch(u, { headers: auth ? { Authorization: auth } : {} });
   return new Response(r.body, {
     status: r.status,
     headers: { 'Content-Type': r.headers.get('content-type') ?? 'image/jpeg', 'Cache-Control': 'private, no-store' },

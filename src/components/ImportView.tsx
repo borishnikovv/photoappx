@@ -218,7 +218,16 @@ export function ImportView() {
                 {readingAlbum ? 'Reading…' : 'Import'}
               </button>
             </form>
-            {error && <p style={{ color: 'var(--bad)', marginTop: 20, marginBottom: 0 }}>{error}</p>}
+            {error && (
+              <p style={{ color: 'var(--bad)', marginTop: 20, marginBottom: 0 }}>
+                {error.split('\n')[0]}
+                {error.includes('\n') && (
+                  <span className="mono faint" style={{ display: 'block', marginTop: 8, textTransform: 'none', userSelect: 'all' }}>
+                    {error.split('\n')[1]}
+                  </span>
+                )}
+              </p>
+            )}
             <div className="foot mono">
               {photos.length ? (
                 <>

@@ -17,7 +17,7 @@ export async function fetchSharedAlbum(text: string): Promise<{ title: string; e
         ? 'Album links need the deployed site (Vercel): the album reader isn’t available here.'
         : `Couldn’t read the album (error ${r.status}).`,
   }));
-  if (!r.ok) throw new Error(body.error);
+  if (!r.ok) throw new Error(body.debug ? `${body.error}\n[${body.debug}]` : body.error);
   // No capture dates on the shared page, so keep the album's own order.
   const base = Date.now() - body.photos.length * 1000;
   return {
