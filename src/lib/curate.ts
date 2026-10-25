@@ -525,11 +525,10 @@ export function tiltVerdict(a?: Analysis): 'fix' | 'ask' | null {
   if (!a?.tilt || a.tiltConfidence == null) return null;
   const t = Math.abs(a.tilt), c = a.tiltConfidence;
   if (t < 0.6 || t > 25) return null;
-  // Only a true horizon (a long line with a calm sky or water side) straightens automatically.
-  // Angles from anything else (tree trunks, buildings, furniture) may be the thing itself leaning,
-  // so those are always asked, with a preview.
-  if (a.tiltSource === 'horizon' && c >= 0.5 && t <= 8) return 'fix';
-  if (c >= 0.45 || (c >= 0.3 && t >= 1)) return 'ask';
+  // Only a clean horizon across the whole frame straightens automatically. Partial horizons and
+  // building lines are asked (perspective can fool them by a few degrees); objects are ignored.
+  if (a.tiltSource === 'horizon' && c >= 0.85 && t <= 8) return 'fix';
+  if ((a.tiltSource === 'horizon' || a.tiltSource === 'lines') && c >= 0.55 && t >= 1 && t <= 12) return 'ask';
   return null;
 }
 
@@ -544,7 +543,8 @@ export function keystoneVerdict(a?: Analysis): 'fix' | 'ask' | null {
   if (k < 1 || k > 15 || faces >= 0.03) return null;
   // Only an unmistakable fan of verticals (a building, a room) is corrected automatically; the
   // edges of objects can lean on their own, so anything less certain is asked.
-  return (a.keystoneConfidence ?? 0) >= 0.85 ? 'fix' : 'ask';
+  if (k > 10 || a.tiltSource === 'objects' || a.tiltSource === 'none') return null;
+  return (a.keystoneConfidence ?? 0) >= 0.9 && k <= 8 ? 'fix' : (a.keystoneConfidence ?? 0) >= 0.6 ? 'ask' : null;
 }
 
 /**

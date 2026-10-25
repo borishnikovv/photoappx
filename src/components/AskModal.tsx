@@ -52,7 +52,9 @@ export function AskModal({ onDone }: { onDone: () => void }) {
   const tilts = decisions.filter((x): x is Extract<typeof x, { kind: 'straighten' }> => x.kind === 'straighten');
   // Each tilt question: straighten (default), keep as shot, or leave the photo out.
   const [state, setState] = useState<Map<string, 'fix' | 'keep' | 'skip'>>(new Map());
-  const stateOf = (id: string) => state.get(id) ?? 'fix';
+  // Nothing is straightened unless chosen: these are the uncertain ones (the clear horizons were
+  // already leveled), so the safe default is the photo as shot.
+  const stateOf = (id: string) => state.get(id) ?? 'keep';
 
   useEffect(() => {
     if (!d) onDone();
@@ -106,7 +108,7 @@ export function AskModal({ onDone }: { onDone: () => void }) {
           <>
             <h2>Straighten these?</h2>
             <p className="dim">
-              These look off level. Tap a photo to keep it as shot (a deliberate angle, say), or skip it to leave it out, then apply.
+              These might be off level, but I'm not sure. Each shows the straightened version: tap the ones that look better straightened, or skip a photo to leave it out.
             </p>
             <div className="ask-options n3">
               {tilts.map((t) => {
@@ -120,8 +122,8 @@ export function AskModal({ onDone }: { onDone: () => void }) {
                       className={v === 'fix' ? 'on' : 'off'}
                       onClick={() => setState((m) => new Map(m).set(t.id, v === 'fix' ? 'keep' : 'fix'))}
                     >
-                      {v === 'fix' ? <Fixed p={p} angle={t.angle} keystone={t.keystone} /> : <img src={p.thumb} alt="" />}
-                      <span className="mono">{v === 'fix' ? fixLabel(t.angle, t.keystone) : v === 'keep' ? 'Keep as shot' : 'Left out'}</span>
+                      <Fixed p={p} angle={t.angle} keystone={t.keystone} />
+                      <span className="mono">{v === 'fix' ? `✓ ${fixLabel(t.angle, t.keystone)}` : v === 'keep' ? `As shot · tap to ${fixLabel(t.angle, t.keystone).toLowerCase()}` : 'Left out'}</span>
                     </button>
                     <button
                       className="btn ghost sm skip"
@@ -142,7 +144,7 @@ export function AskModal({ onDone }: { onDone: () => void }) {
                 Later
               </button>
               <button className="btn sm primary" disabled={busy} onClick={applyTilts}>
-                {busy ? 'Straightening…' : `Apply (${tilts.filter((t) => stateOf(t.id) === 'fix').length} straightened)`}
+                {busy ? 'Straightening…' : `Done (${tilts.filter((t) => stateOf(t.id) === 'fix').length} straightened)`}
               </button>
             </div>
           </>

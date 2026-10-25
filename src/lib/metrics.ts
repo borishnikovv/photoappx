@@ -286,9 +286,120 @@ export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { 
 
 export type TiltLine = { dev: number; len: number; vertical: boolean; offset: number };
 
+/**
+ * Horizon finder: the straight line across the frame that best separates two consistently
+ * different regions (sky over land, land over water). Works on soft, hazy horizons that edge
+ * detectors only see in fragments, and ignores textured edges (their contrast flips sign).
+ */
+export function findHorizon(lum: Float32Array, w: number, h: number) {
+  // Work small: ~200 px wide.
+  const k = Math.max(1, Math.floor(w / 200));
+  const W = Math.floor(w / k), H = Math.floor(h / k);
+  const L = new Float32Array(W * H);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      let s = 0;
+      for (let j = 0; j < k; j++) for (let i = 0; i < k; i++) s += lum[(y * k + j) * w + x * k + i];
+      L[y * W + x] = s / (k * k);
+    }
+  const cx = W / 2;
+  const B = 2; // band offset (px) above/below the line
+  const score = (deg: number, y0: number) => {
+    const t = Math.tan((deg * Math.PI) / 180);
+    let sum = 0, n = 0, cover = 0;
+    for (let x = 1; x < W - 1; x += 1) {
+      const y = y0 + (x - cx) * t;
+      const ya = Math.round(y - B), yb = Math.round(y + B);
+      if (ya < 1 || yb >= H - 1) continue;
+      cover++;
+      const up = (L[(ya - 1) * W + x] + L[ya * W + x]) / 2, dn = (L[(yb + 1) * W + x] + L[yb * W + x]) / 2;
+      sum += up - dn;
+      n++;
+    }
+    return { s: n ? Math.abs(sum / n) : 0, sign: Math.sign(sum), cover: cover / (W - 2) };
+  };
+  let best = { deg: 0, y0: 0, s: 0 };
+  for (let deg = -12; deg <= 12.001; deg += 0.5)
+    for (let y0 = Math.round(H * 0.1); y0 <= H * 0.9; y0++) {
+      const r = score(deg, y0);
+      if (r.cover < 0.85) continue;
+      if (r.s > best.s) best = { deg, y0, s: r.s };
+    }
+  // Refine angle finely around the peak.
+  for (let deg = best.deg - 0.5; deg <= best.deg + 0.5001; deg += 0.1)
+    for (let y0 = best.y0 - 2; y0 <= best.y0 + 2; y0++) {
+      const r = score(deg, y0);
+      if (r.cover >= 0.85 && r.s > best.s) best = { deg, y0, s: r.s };
+    }
+  // Sharpness: how much worse the same line is when turned by 2-3°. A real horizon is a straight
+  // line: turning it smears the step. A gradual tone change (sky gradient) doesn't care.
+  let off = 0;
+  for (const dd of [-3, -2, 2, 3]) {
+    let m = 0;
+    for (let y0 = best.y0 - 3; y0 <= best.y0 + 3; y0++) m = Math.max(m, score(best.deg + dd, y0).s);
+    off = Math.max(off, m);
+  }
+  const sharp = best.s > 0 ? 1 - off / best.s : 0;
+  // Continuity: share of columns where the step is clearly there with the same sign.
+  const t = Math.tan((best.deg * Math.PI) / 180);
+  const sign = Math.sign(score(best.deg, best.y0).sign || 1);
+  let cont = 0, cols = 0, roughUp = 0, roughDn = 0;
+  for (let x = 1; x < W - 1; x++) {
+    const y = best.y0 + (x - cx) * t;
+    const ya = Math.round(y - B), yb = Math.round(y + B);
+    if (ya < 4 || yb >= H - 4) continue;
+    cols++;
+    if ((L[ya * W + x] - L[yb * W + x]) * sign > 6) cont++;
+    for (const d of [2, 4]) {
+      roughUp += Math.abs(L[(ya - d) * W + x + 1] - L[(ya - d) * W + x - 1]);
+      roughDn += Math.abs(L[(yb + d) * W + x + 1] - L[(yb + d) * W + x - 1]);
+    }
+  }
+  const continuity = cols ? cont / cols : 0;
+  const calm = Math.min(roughUp, roughDn) / Math.max(1e-6, roughUp, roughDn);
+  return { tilt: best.deg, strength: best.s, sharp, continuity, calm, y: (best.y0 * k) / h };
+}
+
+/**
+ * Tilt from long vertical lines (buildings, door frames, poles), favoring the central ones:
+ * looking up or down makes the side ones lean in a fan, the middle ones much less.
+ */
+function verticalTilt(lines: TiltLine[], w: number, h: number) {
+  const vs = lines.filter((l) => l.vertical && l.len >= 0.15 * h);
+  if (vs.length < 3) return null;
+  const wt = (l: TiltLine) => l.len * l.len * Math.max(0.15, 1 - Math.abs(l.offset) / (w / 2));
+  let best = 0, bestW = -1;
+  for (const c of vs) {
+    const s = vs.reduce((a, l) => a + (Math.abs(l.dev - c.dev) <= 0.75 ? wt(l) : 0), 0);
+    if (s > bestW) [best, bestW] = [c.dev, s];
+  }
+  const agree = vs.filter((l) => Math.abs(l.dev - best) <= 0.75);
+  const support = agree.reduce((a, l) => a + l.len, 0) / h;
+  if (agree.length < 3 || support < 1.2) return null;
+  return { tilt: agree.reduce((a, l) => a + l.dev * wt(l), 0) / agree.reduce((a, l) => a + wt(l), 0), support };
+}
+
+/**
+ * Which way is level, and how sure. Measured on real photos (rotated by known angles):
+ *  - A horizon seen as one clean step across nearly the whole width (sky/land, land/water) is
+ *    accurate to well under a degree — the only evidence trusted to straighten on its own.
+ *  - Vertical lines and partial horizons are often thrown off by perspective (streets, rooms) by
+ *    2–3°, so they only ever lead to a question, never an automatic change.
+ *  - Angles from objects alone are ignored.
+ */
 function tiltAndKeystone(lum: Float32Array, w: number, h: number) {
   const dbg: { all?: TiltLine[] } = {};
-  const t = estimateTilt(lum, w, h, dbg);
+  const lines = estimateTilt(lum, w, h, dbg);
+  const hz = findHorizon(lum, w, h);
+  const v = verticalTilt(dbg.all ?? [], w, h);
+  const placed = hz.y > 0.06 && hz.y < 0.86 && hz.strength >= 15;
+  const agrees = !v || Math.abs(v.tilt - hz.tilt) <= 1.5;
+  let t: { tilt: number; tiltConfidence: number; tiltSource: 'horizon' | 'lines' | 'objects' | 'none' };
+  if (placed && agrees && hz.continuity >= 0.9) t = { tilt: hz.tilt, tiltConfidence: 0.9, tiltSource: 'horizon' };
+  else if (placed && agrees && hz.continuity >= 0.8) t = { tilt: hz.tilt, tiltConfidence: 0.6, tiltSource: 'horizon' };
+  // Building lines count only when horizontals agree too (a facade, a room); tree trunks alone don't.
+  else if (v && lines.tiltSource === 'lines' && Math.abs(lines.tilt - v.tilt) <= 1.5) t = { tilt: v.tilt, tiltConfidence: Math.min(0.7, 0.4 + v.support * 0.1), tiltSource: 'lines' };
+  else t = { tilt: lines.tilt, tiltConfidence: Math.min(0.3, lines.tiltConfidence), tiltSource: lines.tiltSource === 'none' ? 'none' : 'objects' };
   return { ...t, ...estimateKeystone(dbg.all ?? [], w, h, t.tilt) };
 }
 

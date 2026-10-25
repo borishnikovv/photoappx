@@ -56,6 +56,12 @@ function column(b: Photo, c: Photo, slide: number, r: () => number, o: StyleOpti
   return [mk(b, x, top, w, hb, { ...look, z: 1 }), mk(c, x, top + hb + 2 * border + gap, w, hc, { ...look, z: 2 })];
 }
 
+/** Prints laid over a wide backdrop are 1:1 or 4:3 (portraits 4:5): quiet shapes against the 16:9. */
+const printShape = (p: Photo) => {
+  const a = p.width / p.height;
+  return a >= 1.15 ? 4 / 3 : a >= 0.9 ? 1 : 4 / 5;
+};
+
 const pick = <T,>(r: () => number, xs: T[]) => xs[Math.floor(r() * xs.length)];
 
 /** Focal point: the center of the faces if any were found, else just above center. */
@@ -202,6 +208,25 @@ export const TEMPLATES: Template[] = [
       const seam = r() > 0.5 ? W : 2 * W;
       const at = placeOver(bg, a, box, straddle(seam, box.w), heights(box.h, 110), () => 0);
       return [bg, mk(b, at.x, at.y, box.w, box.h, ov(o))];
+    },
+  },
+  {
+    id: 'wide2-pair', label: 'Wide spread + prints', family: 'spread', span: 2, slots: [WIDE, SQ_WIDE, SQ_WIDE], weight: 1.4, hero: true,
+    // A 16:9 backdrop across two slides with two quieter 1:1 / 4:3 prints on top.
+    build: ([a, b, c], _r, o) => {
+      const bg = mk(a, 0, 0, 2 * W, H);
+      const B = fitBox(printShape(b), W * 0.62, H * 0.5), C = fitBox(printShape(c), W * 0.62, H * 0.5);
+      return [bg, mk(b, (W - B.w) / 2, 80, B.w, B.h, ov(o)), mk(c, W + (W - C.w) / 2, H - C.h - 80, C.w, C.h, ov(o, 2))];
+    },
+  },
+  {
+    id: 'wide3-trio', label: 'Wide spread ×3 + prints', family: 'spread', span: 3, slots: [WIDE, SQ_WIDE, SQ_WIDE, SQ_WIDE], weight: 1.4, hero: true,
+    // The same over three slides: a print on each, stepping high, low, high.
+    build: ([a, b, c, d], _r, o) => {
+      const bg = mk(a, 0, 0, 3 * W, H);
+      const boxes = [b, c, d].map((p) => fitBox(printShape(p), W * 0.6, H * 0.48));
+      const ps = [b, c, d];
+      return [bg, ...boxes.map((bx, i) => mk(ps[i], i * W + (W - bx.w) / 2, i % 2 ? H - bx.h - 80 : 80, bx.w, bx.h, ov(o, i + 1)))];
     },
   },
   // ---- Patterns from editorial carousel apps ----
@@ -1078,6 +1103,19 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
       // Keep the rhythm varied: a third section in a row from the same family has to earn it.
       if (recentFamilies[0] === t.family && recentFamilies[1] === t.family) w *= 0.55;
       if (sections.length === 0) w *= t.hero ? 1.6 : 0.6;
+      // Rhythm: a mix of wide spreads, stacked prints, mosaics and the odd single photo — never a
+      // run of the same kind, never page after page of single photos or half-and-half splits.
+      const kind = kindOf(t);
+      const kinds = sections.map((x) => kindOf(templateById(x.template)));
+      const count = (k: string) => kinds.filter((x) => x === k).length;
+      if (kind === 'single') {
+        if (kinds[kinds.length - 1] === 'single') w *= 0.2;
+        if (count('single') >= Math.max(2, sections.length * 0.3)) w *= 0.4;
+      }
+      if (kind === 'split') w *= count('split') >= 2 ? 0.05 : kinds[kinds.length - 1] === 'split' ? 0.2 : 1;
+      if (kind === 'wide' && count('wide') < 2 && sections.length >= 1) w *= 3;
+      if (kind === 'stack' && count('stack') < 2 && sections.length >= 1) w *= 2.5;
+      if (kinds.slice(-2).includes(kind)) w *= 0.6;
       // Signature patterns: strongly wanted once, welcome a second time in a long carousel.
       if (t.signature) {
         const seen = sections.filter((x) => x.template === t.id).length;
@@ -1086,7 +1124,7 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
       }
       // Pace: use photos at the rate that fills the carousel exactly — not faster, not slower.
       const perSlide = ps.length / t.span;
-      w *= Math.exp(-1.4 * Math.abs(perSlide - density));
+      w *= Math.exp(-0.9 * Math.abs(perSlide - density));
       for (let k = 0; k < (t.family === 'mosaic' ? 1 : 2); k++) {
         const sec = buildSection(t, ps, rng(Math.floor(r() * 1e9)), o);
         const v = scoreSection(sec, byId).score * 3 + Math.log(w) * 0.6 + r() * 0.25;
@@ -1107,6 +1145,16 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
     recentFamilies.length = Math.min(recentFamilies.length, 2);
   }
   return { id: uid('car'), name: emph.name, seed, sections };
+}
+
+/** The kind of page a layout makes, for the carousel's rhythm. */
+function kindOf(t: Template): 'wide' | 'stack' | 'mosaic' | 'single' | 'split' | 'other' {
+  if (['column2', 'column4', 'column4-split', 'duo-over', 'duo-over2'].includes(t.id) || /stack|grid/.test(t.id)) return 'stack';
+  if (t.family === 'mosaic') return 'mosaic';
+  if (t.span >= 2 && t.slots[0].every((o) => o === 'landscape' || o === 'pano')) return 'wide';
+  if (['split-h', 'duo-stack'].includes(t.id)) return 'split';
+  if (t.slots.length === 1) return 'single';
+  return 'other';
 }
 
 /** Templates that can hold exactly these photos, for "shuffle layout". */

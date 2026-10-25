@@ -176,7 +176,7 @@ export const useStore = create<State>((set, get) => {
     analyzing: null,
     smartMode: null,
     picks: [],
-    count: 30,
+    count: 40,
     seq: 'story',
     style: defaultStyle,
     carousels: [],
