@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { loadFiles } from '../lib/importer';
 import { driveConfigured, pickFromDrive } from '../lib/drive';
 import { extractAlbumLink, fetchSharedAlbum } from '../lib/albumLink';
+import { deleteProject, listProjects, type ProjectSummary } from '../lib/projects';
 import { photosConfigured, photosSignedIn, pickFromGooglePhotos, signInToPhotos } from '../lib/gphotos';
 
 type Entry = Parameters<typeof loadFiles>[0][number];
@@ -29,7 +30,16 @@ async function fromDrop(dt: DataTransfer): Promise<Entry[]> {
 }
 
 export function ImportView() {
-  const { addPhotos, setStep, importing, setImporting, analyze, photos, reset } = useStore();
+  const { addPhotos, setStep, importing, setImporting, analyze, photos, reset, openProject, projectId } = useStore();
+  const [recent, setRecent] = useState<ProjectSummary[]>([]);
+  useEffect(() => {
+    let urls: string[] = [];
+    listProjects().then((r) => {
+      urls = r.flatMap((p) => (p.cover ? [p.cover] : []));
+      setRecent(r);
+    });
+    return () => urls.forEach((u) => URL.revokeObjectURL(u));
+  }, []);
   const folderRef = useRef<HTMLInputElement>(null);
   const filesRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
@@ -56,20 +66,24 @@ export function ImportView() {
     }
   };
 
-  const run = async (entries: Entry[], source: 'local' | 'drive' | 'photos') => {
+  const run = async (entries: Entry[], source: 'local' | 'drive' | 'photos', name?: string) => {
     setError('');
     if (!entries.length) return;
     setImporting({ done: 0, total: entries.length });
     const ps = await loadFiles(entries, source, (done, total) => setImporting({ done, total }));
     setImporting(null);
     if (!ps.length) return setError('No readable photos found there.');
-    addPhotos(ps);
+    addPhotos(ps, name);
     setStep('curate');
     analyze();
   };
 
-  const fromInput = (files: FileList | null) =>
-    run([...(files ?? [])].map((f) => ({ file: f, name: f.name, date: f.lastModified })), 'local');
+  const fromInput = (files: FileList | null) => {
+    const list = [...(files ?? [])];
+    // A chosen folder names the project.
+    const folder = list[0]?.webkitRelativePath?.split('/')[0];
+    run(list.map((f) => ({ file: f, name: f.name, date: f.lastModified })), 'local', folder || undefined);
+  };
 
   const drive = async () => {
     try {
@@ -212,7 +226,7 @@ export function ImportView() {
                     >
                       Change link
                     </button>
-                    <button className="btn sm primary" onClick={() => run(album.entries, 'photos')}>
+                    <button className="btn sm primary" onClick={() => run(album.entries, 'photos', album.title || undefined)}>
                       Import {album.entries.length} photos
                     </button>
                   </div>
@@ -270,13 +284,53 @@ export function ImportView() {
                     Continue
                   </button>
                   <button className="btn ghost sm" onClick={reset}>
-                    Clear
+                    New project
                   </button>
                 </>
               ) : (
                 'Or drop a folder here · Processed on your device'
               )}
             </div>
+            {recent.filter((r) => r.id !== projectId).length > 0 && (
+              <div className="recent">
+                <div className="mono faint">Recent projects · saved on this device</div>
+                <div className="recent-list">
+                  {recent
+                    .filter((r) => r.id !== projectId)
+                    .slice(0, 6)
+                    .map((r) => (
+                      <div key={r.id} className="recent-item">
+                        <button
+                          className="recent-open"
+                          onClick={async () => {
+                            if (!(await openProject(r.id))) setError("That project couldn't be opened.");
+                          }}
+                        >
+                          {r.cover ? <img src={r.cover} alt="" /> : <span className="recent-blank" />}
+                          <span className="recent-text">
+                            <span className="recent-name">{r.name}</span>
+                            <span className="mono faint">
+                              {r.photos} photos · {new Date(r.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          className="btn ghost sm"
+                          title="Delete project"
+                          aria-label={`Delete ${r.name}`}
+                          onClick={async () => {
+                            if (!confirm(`Delete "${r.name}" from this device?`)) return;
+                            await deleteProject(r.id).catch(() => {});
+                            setRecent((x) => x.filter((y) => y.id !== r.id));
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
           </>
         )}
         <input

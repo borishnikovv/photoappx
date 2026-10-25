@@ -4,6 +4,7 @@ import { VARIANTS, addBridges, fixSlivers, groundFor, recoverSection, compatible
 import { analyzeAll, buildDecisions, curate, distance, sameSceneFor, groupDuplicates, keystoneVerdict, tiltVerdict, type Progress, type Sequence } from './lib/curate';
 import { fitBox, photoOrientation } from './lib/geometry';
 import { level, straighten, unstraighten } from './lib/straighten';
+import { loadProject, type Draft } from './lib/projects';
 
 export type Step = 'import' | 'curate' | 'compose' | 'export';
 
@@ -25,8 +26,19 @@ interface State {
   decisions: Decision[];
   askOpen: boolean;
 
+  /** The project this work autosaves into (see lib/autosave.ts). */
+  projectId: string | null;
+  projectName: string;
+  createdAt: number;
+  /** Named snapshots of the layouts, to try a direction and come back. */
+  drafts: Draft[];
+  saveDraft: () => void;
+  restoreDraft: (id: string) => void;
+  deleteDraft: (id: string) => void;
+  openProject: (id: string) => Promise<boolean>;
+
   setStep: (s: Step) => void;
-  addPhotos: (ps: Photo[]) => void;
+  addPhotos: (ps: Photo[], name?: string) => void;
   setImporting: (p: State['importing']) => void;
   analyze: () => Promise<void>;
   autoPick: () => void;
@@ -174,12 +186,76 @@ export const useStore = create<State>((set, get) => {
     answered: [],
     past: [],
     future: [],
+    projectId: null,
+    projectName: '',
+    createdAt: 0,
+    drafts: [],
+
+    saveDraft: () => {
+      const { carousels, active, style, drafts } = get();
+      if (!carousels.length) return;
+      const n = drafts.length ? Math.max(...drafts.map((d) => +d.name.replace(/\D/g, '') || 0)) + 1 : 1;
+      const d: Draft = { id: `d_${Date.now().toString(36)}`, name: `Draft ${n}`, savedAt: Date.now(), carousels, active, style };
+      // Up to five; the oldest goes first.
+      set({ drafts: [d, ...drafts].slice(0, 5) });
+    },
+    restoreDraft: (id) => {
+      const d = get().drafts.find((x) => x.id === id);
+      if (!d) return;
+      checkpoint();
+      set({ carousels: d.carousels, active: d.active, style: d.style, selected: null });
+    },
+    deleteDraft: (id) => set((s) => ({ drafts: s.drafts.filter((d) => d.id !== id) })),
+    openProject: async (id) => {
+      const got = await loadProject(id).catch(() => null);
+      if (!got) return false;
+      const { state: st, photos: loaded } = got;
+      const order = new Map(st.photoIds.map((pid, i) => [pid, i]));
+      const photos = loaded.filter((p) => order.has(p.id)).sort((a, b) => order.get(a.id)! - order.get(b.id)!);
+      const groups = new Map(st.groups.map(([pid, g, b]) => [pid, { g, b }]));
+      for (const p of photos) {
+        const g = groups.get(p.id);
+        if (p.analysis && g) Object.assign(p.analysis, { groupId: g.g, groupBest: g.b });
+      }
+      const unfinished = photos.some((p) => !p.analysis);
+      set({
+        projectId: st.id,
+        projectName: st.name,
+        createdAt: st.createdAt,
+        photos,
+        byId: new Map(photos.map((p) => [p.id, p])),
+        picks: st.picks.filter((pid) => order.has(pid)),
+        count: st.count,
+        seq: st.seq as Sequence,
+        style: { ...defaultStyle, ...st.style },
+        carousels: st.carousels,
+        active: st.active,
+        decisions: st.decisions,
+        drafts: st.drafts ?? [],
+        smartMode: st.smartMode,
+        step: unfinished ? 'curate' : ((st.step as Step) === 'export' ? 'compose' : (st.step as Step)) || 'curate',
+        selected: null,
+        answered: [],
+        past: [],
+        future: [],
+        askOpen: false,
+      });
+      // Picks up where it left off: only the photos not reviewed yet are analyzed.
+      if (unfinished) get().analyze();
+      return true;
+    },
 
     setStep: (step) => set({ step }),
-    addPhotos: (ps) =>
+    addPhotos: (ps, name) =>
       set((s) => {
         const photos = [...s.photos, ...ps].sort((a, b) => a.date - b.date);
-        return { photos, byId: new Map(photos.map((p) => [p.id, p])) };
+        const fresh = !s.projectId;
+        const when = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        return {
+          photos,
+          byId: new Map(photos.map((p) => [p.id, p])),
+          ...(fresh && { projectId: `p_${Date.now().toString(36)}`, projectName: name || `Photos · ${when}`, createdAt: Date.now(), drafts: [] }),
+        };
       }),
     setImporting: (importing) => set({ importing }),
 
@@ -467,7 +543,7 @@ export const useStore = create<State>((set, get) => {
       const t = templateById(o === 'pano' ? 'pano2' : o === 'landscape' ? (style.families.pano ? 'pano2' : 'framed') : 'full');
       editActive((c) => ({ ...c, sections: [...c.sections, rebuildSection({ id: `sec_${photoId}_${Date.now()}` } as Section, t, [p], style, Date.now())] }));
     },
-    reset: () => set({ step: 'import', photos: [], byId: new Map(), picks: [], carousels: [], selected: null, smartMode: null, decisions: [], askOpen: false, answered: [], past: [], future: [] }),
+    reset: () => set({ projectId: null, projectName: '', drafts: [], step: 'import', photos: [], byId: new Map(), picks: [], carousels: [], selected: null, smartMode: null, decisions: [], askOpen: false, answered: [], past: [], future: [] }),
   };
 });
 

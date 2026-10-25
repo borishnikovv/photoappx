@@ -77,6 +77,43 @@ function Preview({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** Named snapshots: save where you are, try something bolder, come back. */
+function Drafts() {
+  const { drafts, saveDraft, restoreDraft, deleteDraft } = useStore();
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="pop-wrap">
+      <button className="btn sm ghost" aria-expanded={open} onClick={() => setOpen(!open)} title="Save and switch between versions">
+        Drafts{drafts.length ? ` · ${drafts.length}` : ''}
+      </button>
+      {open && (
+        <div className="pop" onPointerDown={(e) => e.stopPropagation()}>
+          <button className="btn sm" style={{ width: '100%' }} onClick={saveDraft}>
+            Save as draft
+          </button>
+          {drafts.length ? (
+            drafts.map((d) => (
+              <div key={d.id} className="pop-row">
+                <button className="pop-main" onClick={() => (restoreDraft(d.id), setOpen(false))} title="Go back to this draft">
+                  {d.name}
+                  <span className="mono faint">{new Date(d.savedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</span>
+                </button>
+                <button className="btn ghost sm icon" aria-label={`Delete ${d.name}`} onClick={() => deleteDraft(d.id)}>
+                  ×
+                </button>
+              </div>
+            ))
+          ) : (
+            <p className="faint" style={{ margin: '8px 2px 0', fontSize: 12 }}>
+              Up to 5. Your work also saves automatically.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Scored alternatives for one section: the same photos in other layouts, best first. */
 function Alternatives({ sectionId, onClose }: { sectionId: string; onClose: () => void }) {
   const { carousels, active, byId, style, replaceSection } = useStore();
@@ -201,6 +238,7 @@ export function ComposeView() {
         <button className="btn sm ghost icon" title="Redo (Shift+Ctrl/⌘+Z)" disabled={!s.future.length} onClick={s.redo}>
           ↷
         </button>
+        <Drafts />
         <div className="sep" />
         {FAMILIES.map((f) => (
           <button key={f.id} className="chip" aria-pressed={style.families[f.id]} onClick={() => toggleFamily(f.id)}>

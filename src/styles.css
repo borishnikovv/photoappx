@@ -311,3 +311,20 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
 .btn.pinned { color: var(--accent); }
 
 .select { background: var(--bg); border: 1px solid var(--line-2); border-radius: 999px; height: 30px; padding: 0 10px; color: var(--fg); font-size: 12px; }
+
+/* Recent projects */
+.recent { max-width: 560px; margin: 28px auto 0; text-align: left; }
+.recent-list { display: grid; gap: 6px; margin-top: 10px; }
+.recent-item { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--bg-1); padding: 6px 6px 6px 6px; }
+.recent-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; background: none; border: 0; padding: 0; color: inherit; text-align: left; cursor: pointer; }
+.recent-open img, .recent-blank { width: 44px; height: 55px; object-fit: cover; border-radius: 6px; background: var(--bg-2, #1a1a1a); flex: none; }
+.recent-text { display: grid; gap: 3px; min-width: 0; }
+.recent-name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recent-item:hover { border-color: var(--fg-3); }
+
+/* Small popovers (Drafts) */
+.pop-wrap { position: relative; }
+.pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; width: 220px; padding: 8px; display: grid; gap: 4px; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.pop-row { display: flex; align-items: center; gap: 4px; }
+.pop-main { flex: 1; display: flex; justify-content: space-between; gap: 8px; background: none; border: 0; color: inherit; padding: 7px 8px; border-radius: 8px; cursor: pointer; font-size: 13px; text-align: left; }
+.pop-main:hover { background: var(--bg-2, #1a1a1a); }
