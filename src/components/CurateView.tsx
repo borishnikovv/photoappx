@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import type { Photo } from '../types';
-import { AskModal, Leveled } from './AskModal';
+import { AskModal } from './AskModal';
+import { previewLevel } from '../lib/straighten';
 import { tiltVerdict } from '../lib/curate';
 
 type Filter = 'all' | 'picks' | 'out';
@@ -24,53 +25,72 @@ function Detail({ p, picked }: { p: Photo; picked: boolean }) {
   const setStraight = useStore((s) => s.setStraight);
   const [busy, setBusy] = useState(false);
   const a = p.analysis;
-  const level = async (on: boolean | number) => {
+  const level = async (on: boolean | { tilt: number; keystone: number }) => {
     setBusy(true);
     await setStraight(p.id, on);
     setBusy(false);
-    setTurn(null);
+    setEdit(null);
   };
-  // Manual straightening, in degrees clockwise; previewed live on the untouched original.
-  const [turn, setTurn] = useState<number | null>(null);
-  const applied = p.straightened != null ? -p.straightened : 0;
+  // Manual leveling: rotation (degrees clockwise) and skew, previewed exactly on the original.
+  const applied = { turn: p.straightened != null ? -p.straightened : 0, skew: p.keystone ? -p.keystone : 0 };
+  const [edit, setEdit] = useState<{ turn: number; skew: number } | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
   const base = p.original ? { ...p, ...p.original } : p;
+  useEffect(() => {
+    if (!edit) return setPreview(null);
+    let live = true;
+    const t = setTimeout(() => {
+      previewLevel(base.thumb, -edit.turn, -edit.skew).then((u) => (live ? setPreview(u) : URL.revokeObjectURL(u)));
+    }, 90);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [edit, base.thumb]);
+  const v = edit ?? applied;
+  const slider = (label: string, key: 'turn' | 'skew', title: string) => (
+    <div className="field" style={{ marginTop: 8 }} title={title}>
+      <span className="mono faint" style={{ width: 38 }}>
+        {label}
+      </span>
+      <input
+        type="range"
+        min={-15}
+        max={15}
+        step={0.1}
+        value={v[key]}
+        onChange={(e) => setEdit({ ...v, [key]: +e.target.value })}
+        style={{ flex: 1, width: 'auto' }}
+      />
+      <span className="mono" style={{ width: 44, textAlign: 'right' }}>
+        {v[key].toFixed(1)}°
+      </span>
+    </div>
+  );
   return (
     <div className="detail">
-      {turn != null ? (
-        <div style={{ maxHeight: 300, display: 'flex', justifyContent: 'center', background: 'var(--bg-1)', borderRadius: 6, overflow: 'hidden' }}>
-          <div style={{ height: 300, aspectRatio: `${base.width} / ${base.height}`, maxWidth: '100%', position: 'relative' }}>
-            <Leveled p={base} angle={-turn} />
+      {edit ? (
+        <div style={{ position: 'relative', background: 'var(--bg-1)', borderRadius: 6, overflow: 'hidden', display: 'flex', justifyContent: 'center' }}>
+          <div style={{ position: 'relative' }}>
+            <img src={preview ?? base.thumb} alt="" style={{ maxHeight: 300, maxWidth: '100%' }} />
             <div className="level-grid" />
           </div>
         </div>
       ) : (
         <img src={p.thumb} alt="" />
       )}
-      <div className="field" style={{ marginTop: 10, flexWrap: 'wrap' }}>
-        <span className="mono faint">Level</span>
-        <input
-          type="range"
-          min={-15}
-          max={15}
-          step={0.1}
-          value={turn ?? applied}
-          onChange={(e) => setTurn(+e.target.value)}
-          style={{ flex: 1, width: 'auto' }}
-        />
-        <span className="mono" style={{ width: 44, textAlign: 'right' }}>
-          {(turn ?? applied).toFixed(1)}°
-        </span>
-        {turn != null && (
-          <>
-            <button className="btn sm primary" disabled={busy} onClick={() => level(-turn)}>
-              {busy ? '…' : 'Apply'}
-            </button>
-            <button className="btn sm ghost" disabled={busy} onClick={() => setTurn(null)}>
-              Cancel
-            </button>
-          </>
-        )}
-      </div>
+      {slider('Level', 'turn', 'Rotate to level the horizon')}
+      {slider('Skew', 'skew', 'Straighten leaning verticals (buildings, door frames) from shooting up or down')}
+      {edit && (
+        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          <button className="btn sm primary" disabled={busy} onClick={() => level({ tilt: -edit.turn, keystone: -edit.skew })}>
+            {busy ? '…' : 'Apply'}
+          </button>
+          <button className="btn sm ghost" disabled={busy} onClick={() => setEdit(null)}>
+            Cancel
+          </button>
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
@@ -87,7 +107,7 @@ function Detail({ p, picked }: { p: Photo; picked: boolean }) {
           {(p.straightened != null || tiltVerdict(a)) && (
             <div className="ask-banner" style={{ marginTop: 12 }}>
               <span style={{ flex: 1 }}>
-                {p.straightened != null ? `Straightened ${Math.abs(p.straightened).toFixed(1)}°` : `Looks ${Math.abs(a.tilt!).toFixed(1)}° off level`}
+                {p.straightened != null ? `Straightened ${Math.abs(p.straightened).toFixed(1)}°${p.keystone ? `, skew ${Math.abs(p.keystone).toFixed(1)}°` : ''}` : `Looks ${Math.abs(a.tilt!).toFixed(1)}° off level`}
               </span>
               <button className="btn sm" disabled={busy} onClick={() => level(p.straightened == null)}>
                 {p.straightened != null ? 'Undo' : 'Straighten'}

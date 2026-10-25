@@ -3,7 +3,8 @@ import type { Carousel, Item, Photo, StyleOptions } from '../types';
 import { SLIDE_H, SLIDE_W, backgroundOf, clamp, slideCount, sourceRect } from '../lib/geometry';
 import { previewUrl } from '../lib/importer';
 
-export type EditMode = 'frame' | 'photo';
+export type EditMode = 'frame' | 'photo' | 'crop';
+type Edge = 'l' | 'r' | 't' | 'b';
 
 function usePreview(p: Photo | undefined) {
   const [url, setUrl] = useState(p?.thumb);
@@ -56,14 +57,45 @@ function snapBest(vs: number[], targets: Target[], tol: number) {
   return best as { i: number; t: number; photo: boolean; d: number } | null;
 }
 
+/**
+ * Crop by dragging one edge of the frame. The picture stays exactly where it is on the canvas
+ * (same scale, same position); only the window onto it changes — like a crop tool.
+ */
+function cropEdge(photo: Photo, s: Item, edge: Edge, d: number): Partial<Item> {
+  const r0 = sourceRect(photo, s);
+  const k = s.w / r0.sw; // canvas px per unit of photo width
+  const kh = s.h / r0.sh;
+  let { x, y, w, h } = s;
+  if (edge === 'l') { x += d; w -= d; }
+  if (edge === 'r') w += d;
+  if (edge === 't') { y += d; h -= d; }
+  if (edge === 'b') h += d;
+  w = Math.max(120, w);
+  h = Math.max(120, h);
+  if (edge === 'l') x = s.x + s.w - w;
+  if (edge === 't') y = s.y + s.h - h;
+  // The new window, in photo units, keeping the picture fixed on the canvas.
+  let sx = r0.sx + (x - s.x) / k, sy = r0.sy + (y - s.y) / kh;
+  let sw = w / k, sh = h / kh;
+  // Can't show more than the whole photo: clamp the frame to the picture's edges.
+  if (sx < 0) { w += sx * k; x -= sx * k; sw += sx; sx = 0; }
+  if (sy < 0) { h += sy * kh; y -= sy * kh; sh += sy; sy = 0; }
+  if (sx + sw > 1) { w -= (sx + sw - 1) * k; sw = 1 - sx; }
+  if (sy + sh > 1) { h -= (sy + sh - 1) * kh; sh = 1 - sy; }
+  // Express it as a cover crop: zoom relative to the base cover window for this frame shape.
+  const cover = sourceRect(photo, { w, h, crop: { fx: 0.5, fy: 0.5, zoom: 1 } });
+  const zoom = Math.max(1, cover.sw / sw);
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), crop: { fx: sx + sw / 2, fy: sy + sh / 2, zoom } };
+}
+
 function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode, onSelect, onChange, others, slides, onGuides }: ItemProps) {
   const url = usePreview(photo);
-  const drag = useRef<{ x: number; y: number; start: Item; kind: 'move' | 'pan' | 'resize' } | null>(null);
+  const drag = useRef<{ x: number; y: number; start: Item; kind: 'move' | 'pan' | 'resize' | Edge } | null>(null);
   const { sx, sy, sw, sh } = sourceRect(photo, item);
   const imgW = (item.w / sw) * scale;
   const imgH = (item.h / sh) * scale;
 
-  const down = (e: React.PointerEvent, kind?: 'resize') => {
+  const down = (e: React.PointerEvent, kind?: 'resize' | Edge) => {
     if (!editable) return;
     e.stopPropagation();
     onSelect?.();
@@ -79,6 +111,10 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
     const dy = (e.clientY - d.y) / scale;
     const s = d.start;
     const tol = 14 / scale;
+    if (d.kind === 'l' || d.kind === 'r' || d.kind === 't' || d.kind === 'b') {
+      onChange(cropEdge(photo, s, d.kind, d.kind === 'l' || d.kind === 'r' ? dx : dy));
+      return;
+    }
     if (d.kind === 'pan') {
       // Dragging right reveals more of the photo's left side.
       const fx = clamp(s.crop.fx - (dx / s.w) * sw, sw / 2, 1 - sw / 2);
@@ -152,6 +188,10 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
         <img src={url} alt="" draggable={false} style={{ width: imgW, height: imgH, left: -sx * imgW, top: -sy * imgH }} />
       </div>
       {selected && editable && mode === 'frame' && !item.base && <div className="handle" onPointerDown={(e) => down(e, 'resize')} />}
+      {selected && editable && mode === 'crop' && !item.base &&
+        (['l', 'r', 't', 'b'] as Edge[]).map((edge) => (
+          <div key={edge} className={`crop-edge ${edge}`} onPointerDown={(e) => down(e, edge)} />
+        ))}
     </div>
   );
 }

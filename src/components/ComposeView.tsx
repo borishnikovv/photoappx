@@ -216,6 +216,9 @@ export function ComposeView() {
                 <button aria-pressed={mode === 'photo'} onClick={() => setMode('photo')}>
                   Pan
                 </button>
+                <button aria-pressed={mode === 'crop'} onClick={() => setMode('crop')}>
+                  Crop
+                </button>
               </div>
             )}
             <div className="field">

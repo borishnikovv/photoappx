@@ -186,6 +186,8 @@ function score(p: Photo, t: TechResult, c: ClipResult | null, faces?: FaceBox[])
     tilt: t.tilt,
     tiltConfidence: t.tiltConfidence,
     tiltSource: t.tiltSource,
+    keystone: t.keystone,
+    keystoneConfidence: t.keystoneConfidence,
     reject,
     reasons: [...new Set(reasons)],
   };
@@ -509,6 +511,17 @@ export function tiltVerdict(a?: Analysis): 'fix' | 'ask' | null {
   if (a.tiltSource === 'lines' && c >= 0.6 && t <= 12) return 'fix';
   if (c >= 0.45 || (c >= 0.3 && t >= 1)) return 'ask';
   return null;
+}
+
+/**
+ * Skew (keystone) worth fixing: clear, fanned-out verticals of a building or room. Never on photos
+ * with prominent faces — warping people looks wrong.
+ */
+export function keystoneVerdict(a?: Analysis): 'fix' | null {
+  if (!a?.keystone || (a.keystoneConfidence ?? 0) < 0.4) return null;
+  const k = Math.abs(a.keystone);
+  const faces = (a.faces ?? []).reduce((t, f) => t + f.w * f.h, 0);
+  return k >= 1 && k <= 15 && faces < 0.03 ? 'fix' : null;
 }
 
 /**

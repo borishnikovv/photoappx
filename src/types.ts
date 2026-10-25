@@ -38,6 +38,8 @@ export interface Analysis {
   tilt?: number;
   tiltConfidence?: number;
   tiltSource?: 'horizon' | 'lines' | 'objects' | 'none';
+  keystone?: number;
+  keystoneConfidence?: number;
 }
 
 export interface Photo {
@@ -53,6 +55,8 @@ export interface Photo {
   analysis?: Analysis;
   /** Degrees this photo was rotated to level it, with the untouched original kept for undo. */
   straightened?: number;
+  /** Keystone (skew) correction applied, in degrees of lean at the frame's sides. */
+  keystone?: number;
   original?: { file: Blob; width: number; height: number; thumb: string; faces?: FaceBox[] };
 }
 

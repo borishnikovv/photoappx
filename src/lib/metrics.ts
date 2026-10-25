@@ -22,6 +22,9 @@ export interface TechResult {
   tiltConfidence: number;
   /** What the angle came from: the horizon (most trusted), other long lines, or objects only. */
   tiltSource: 'horizon' | 'lines' | 'objects' | 'none';
+  /** Lean of vertical edges at the frame's sides (degrees): converging verticals from looking up/down. */
+  keystone: number;
+  keystoneConfidence: number;
   notes: string[];
 }
 
@@ -118,7 +121,7 @@ export function analyze(img: { data: Uint8ClampedArray; width: number; height: n
     }).flat().map((v) => Math.round(v * 10) / 10),
     hist: Array.from(colorHist, (v) => Math.round(Math.sqrt(v / n) * 1000) / 1000),
     detail: detailMap(lum, w, h),
-    ...estimateTilt(lum, w, h),
+    ...tiltAndKeystone(lum, w, h),
     flatness: flat / n,
     coverage,
     notes,
@@ -132,7 +135,7 @@ export function analyze(img: { data: Uint8ClampedArray; width: number; height: n
  * weighted by length, give the camera roll. Near-vertical lines count a little less, because
  * looking up or down makes them converge (keystoning).
  */
-export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { lines?: unknown[]; edges?: number; thresh?: number }) {
+export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { lines?: unknown[]; all?: TiltLine[]; edges?: number; thresh?: number }) {
   const RANGE = 30, STEP = 0.25, NT = Math.round((2 * RANGE) / STEP) + 1;
   const D = Math.ceil(Math.hypot(w, h)), RB = 2, NR = Math.ceil((2 * D) / RB) + 1;
   const accH = new Float32Array(NT * NR), accV = new Float32Array(NT * NR);
@@ -179,7 +182,7 @@ export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { 
       }
     }
   // Peaks = lines; votes ≈ length in pixels.
-  type Line = { dev: number; len: number; vertical: boolean; offset: number };
+  type Line = TiltLine;
   const lines: Line[] = [];
   const minLen = Math.max(30, Math.min(w, h) * 0.1);
   for (const [acc, vertical] of [[accH, false], [accV, true]] as const) {
@@ -197,6 +200,7 @@ export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { 
       }
   }
   lines.sort((a, b) => b.len - a.len);
+  if (debug) debug.all = lines;
   if (!lines.length) {
     if (debug) Object.assign(debug, { lines: [], thresh });
     return { tilt: 0, tiltConfidence: 0, tiltSource: 'none' as const };
@@ -264,6 +268,44 @@ export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { 
     // less may just be one object's edges.
     tiltSource: (hasH && hasV ? 'lines' : 'objects') as 'lines' | 'objects',
   };
+}
+
+export type TiltLine = { dev: number; len: number; vertical: boolean; offset: number };
+
+function tiltAndKeystone(lum: Float32Array, w: number, h: number) {
+  const dbg: { all?: TiltLine[] } = {};
+  const t = estimateTilt(lum, w, h, dbg);
+  return { ...t, ...estimateKeystone(dbg.all ?? [], w, h, t.tilt) };
+}
+
+/**
+ * Keystone ("skew"): when the camera looks up or down, vertical edges lean in a fan, the left
+ * ones one way and the right ones the other, more so toward the sides. Fit each vertical line's
+ * lean (after removing the overall tilt) against its position across the frame; the slope is
+ * the keystone, in degrees of lean at the frame's edge.
+ */
+export function estimateKeystone(lines: TiltLine[], w: number, h: number, tilt: number) {
+  const vs = lines.filter((l) => l.vertical && l.len >= 0.12 * h && Math.abs(l.dev - tilt) < 20).slice(0, 30);
+  const left = vs.filter((l) => l.offset < -0.12 * w).length, right = vs.filter((l) => l.offset > 0.12 * w).length;
+  if (vs.length < 3 || !left || !right) return { keystone: 0, keystoneConfidence: 0 };
+  // Weighted least squares: lean = a + b·u, with u = position across the frame (-1 … 1).
+  let sw = 0, su = 0, sd = 0, suu = 0, sud = 0;
+  for (const l of vs) {
+    const u = l.offset / (w / 2), d = l.dev - tilt, wt = l.len;
+    sw += wt; su += wt * u; sd += wt * d; suu += wt * u * u; sud += wt * u * d;
+  }
+  const den = sw * suu - su * su;
+  if (den <= 1e-9) return { keystone: 0, keystoneConfidence: 0 };
+  const b = (sw * sud - su * sd) / den, a = (sd - b * su) / sw;
+  let res = 0, tot = 0;
+  for (const l of vs) {
+    const u = l.offset / (w / 2), d = l.dev - tilt;
+    res += l.len * (d - a - b * u) ** 2;
+    tot += l.len * (d - sd / sw) ** 2;
+  }
+  const fit = tot > 1e-9 ? Math.max(0, 1 - res / tot) : 0;
+  const support = Math.min(1, vs.reduce((t, l) => t + l.len, 0) / (1.5 * h));
+  return { keystone: b, keystoneConfidence: Math.min(1, fit * support * Math.min(1, Math.min(left, right) / 2)) };
 }
 
 /** Mean gradient strength per cell of an 8×8 grid, scaled so ~1 is very busy. Sky, water, fog → ~0. */

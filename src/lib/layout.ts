@@ -21,7 +21,11 @@ const ANY: Orientation[] = ['portrait', 'square', 'landscape', 'pano'];
 const TALL: Orientation[] = ['portrait', 'square'];
 const WIDE: Orientation[] = ['landscape', 'pano'];
 
-const aspect = (p: Photo) => p.width / p.height;
+/**
+ * The shape a photo is laid out at. Very tall phone shots (9:16) are trimmed toward 2:3 so they
+ * don't run so long; everything else keeps its own shape.
+ */
+const aspect = (p: Photo) => Math.max(p.width / p.height, 2 / 3);
 const pick = <T,>(r: () => number, xs: T[]) => xs[Math.floor(r() * xs.length)];
 
 /** Focal point: the center of the faces if any were found, else just above center. */
@@ -59,12 +63,13 @@ function mk(p: Photo, x: number, y: number, w: number, h: number, extra: Partial
  * A frame shape for a photo laid on top: classic ratios (1:1, 4:3, 3:2, 4:5, 3:4, 16:9) for quiet
  * variety, but only ones close enough to the photo's own shape that the crop never loses it.
  */
-const FRAMES_TALL = [4 / 5, 3 / 4, 1, 2 / 3];
+const FRAMES_TALL = [4 / 5, 3 / 4, 2 / 3];
 const FRAMES_WIDE = [4 / 3, 3 / 2, 1, 16 / 9];
 export function frameAspect(p: Photo, r: () => number) {
-  const a = aspect(p);
-  const opts = (a < 1 ? FRAMES_TALL : FRAMES_WIDE).filter((x) => Math.abs(Math.log(x / a)) < 0.3);
-  return opts.length ? pick(r, opts) : a;
+  // Measured against the photo's true shape, so a 9:16 phone shot only ever loses a little height.
+  const a = p.width / p.height;
+  const opts = (a < 1 ? FRAMES_TALL : FRAMES_WIDE).filter((x) => Math.abs(Math.log(x / a)) < 0.25);
+  return opts.length ? pick(r, opts) : aspect(p);
 }
 
 /** How a photo laid on top of another looks: clean edges by default, or a framed print. */
@@ -170,7 +175,7 @@ export const TEMPLATES: Template[] = [
       const bh = Math.round(H * (0.66 + r() * 0.1)), bw = Math.min(2 * W - 120, Math.round((bh * 16) / 9));
       const bx = Math.round((2 * W - bw) / 2 + (r() - 0.5) * 120), by = Math.round((H - bh) / 2 + (r() - 0.5) * 80);
       const band = mk(a, bx, by, bw, bh);
-      const box = fitBox(aspect(b) < 1 ? 1 : 4 / 3, W * (0.55 + r() * 0.1), H * 0.56);
+      const box = fitBox(frameAspect(b, r), W * (0.55 + r() * 0.1), H * 0.6);
       const corners = [
         { x: bx - box.w * 0.3, y: by - box.h * 0.35 },
         { x: bx + bw - box.w * 0.7, y: by - box.h * 0.35 },
@@ -190,8 +195,8 @@ export const TEMPLATES: Template[] = [
       const bh = Math.round(H * (0.72 + r() * 0.12)), bw = Math.min(3 * W - 200, Math.round((bh * 16) / 9));
       const bx = Math.round((3 * W - bw) / 2), by = Math.round((H - bh) / 2);
       const band = mk(a, bx, by, bw, bh);
-      const B = fitBox(aspect(b) < 1 ? 1 : 4 / 3, W * 0.56, H * 0.52);
-      const C = fitBox(aspect(c) < 1 ? 4 / 5 : 4 / 3, W * 0.56, H * 0.6);
+      const B = fitBox(frameAspect(b, r), W * 0.56, H * 0.58);
+      const C = fitBox(frameAspect(c, r), W * 0.56, H * 0.62);
       const up = r() > 0.5;
       const pb = { x: W - B.w * 0.5, y: up ? 70 : H - B.h - 70 };
       const pc = { x: 2 * W - C.w * 0.5, y: up ? H - C.h - 70 : 70 };
@@ -375,10 +380,27 @@ export function buildSection(t: Template, ps: Photo[], r: () => number, o: Style
 export function finishSection(sec: Section, byId: Map<string, Photo>): Section {
   const ps = sec.items.map((i) => byId.get(i.photoId)!).filter(Boolean);
   sec.items = coverSection(sec.items, byId, sec.span);
+  for (const it of sec.items) if (!it.base) growToReadable(it, sec.span);
   for (const it of sec.items) artCrop(it, byId.get(it.photoId)!, sec.span);
   settleOverlays(sec.items, byId);
   keepFacesOffSeams(sec, ps);
   return sec;
+}
+
+/**
+ * Photos on top must be big enough to read on a phone: at least about half a slide wide or tall.
+ * Small ones grow around their center (keeping their shape) and stay inside the canvas.
+ */
+function growToReadable(it: Spec, span: number) {
+  const minW = W * 0.5, minH = H * 0.5, maxW = W * 0.88, maxH = H * 0.86;
+  let k = Math.max(1, Math.min(minW / it.w, minH / it.h));
+  k = Math.min(k, maxW / it.w, maxH / it.h);
+  if (k <= 1.01) return;
+  const cx = it.x + it.w / 2, cy = it.y + it.h / 2;
+  it.w = Math.round(it.w * k);
+  it.h = Math.round(it.h * k);
+  it.x = Math.round(Math.max(30, Math.min(span * W - it.w - 30, cx - it.w / 2)));
+  it.y = Math.round(Math.max(30, Math.min(H - it.h - 30, cy - it.h / 2)));
 }
 
 const fullyCovers = (it: Spec, span: number) => it.x <= 0 && it.y <= 0 && it.x + it.w >= span * W && it.y + it.h >= H;
@@ -443,9 +465,9 @@ function artCrop(it: Spec, p: Photo, span: number) {
   }
   if (!tx.length) tx.push(it.w / 3, it.w / 2, (2 * it.w) / 3);
   const ty = [it.h / 3, it.h * 0.42, (2 * it.h) / 3];
-  const maxZoom = Math.min(1.35, Math.max(1, (p.width * Math.min(1, sourceRect(p, { ...it, crop: { ...it.crop, zoom: 1 } }).sw)) / (it.w * 0.9)));
+  const maxZoom = Math.min(1.5, Math.max(1, (p.width * Math.min(1, sourceRect(p, { ...it, crop: { ...it.crop, zoom: 1 } }).sw)) / (it.w * 0.9)));
   let best = it.crop, bestC = Infinity;
-  for (const zoom of [1, 1.12, 1.25].filter((z) => z <= maxZoom))
+  for (const zoom of [1, 1.1, 1.2, 1.32, 1.45].filter((z) => z <= maxZoom))
     for (let fx = 0; fx <= 1.0001; fx += 0.04)
       for (let fy = 0; fy <= 1.0001; fy += 0.04) {
         const { sx, sy, sw, sh } = sourceRect(p, { ...it, crop: { fx, fy, zoom } });
@@ -456,7 +478,8 @@ function artCrop(it: Spec, p: Photo, span: number) {
         const dy = Math.min(...ty.map((t) => Math.abs(py - t))) / it.h;
         const subjArea = ((sx1 - sx0) * (sy1 - sy0)) / (sw * sh);
         // Zoom only pays off when the subject is small in the frame.
-        const zoomCost = zoom > 1 ? (subjArea > 0.12 ? 0.4 : 0.05) * (zoom - 1) * 4 : 0;
+        // Zooming in pays off when the subject is small in the frame; big subjects stay as they are.
+        const zoomCost = zoom > 1 ? (subjArea > 0.2 ? 0.5 : subjArea > 0.1 ? 0.12 : -0.04) * (zoom - 1) * 4 : 0;
         const c = cut * 8 + dx + dy * 0.6 + zoomCost + Math.abs(fx - it.crop.fx) * 0.05 + Math.abs(fy - it.crop.fy) * 0.05;
         if (c < bestC) [best, bestC] = [{ fx, fy, zoom }, c];
       }

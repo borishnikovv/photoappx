@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { Carousel, Decision, Item, Photo, Section, StyleOptions } from './types';
 import { VARIANTS, addBridges, fixSlivers, groundFor, recoverSection, compatibleTemplates, generateCarousel, rebuildSection, templateById } from './lib/layout';
-import { analyzeAll, buildDecisions, curate, distance, sameSceneFor, groupDuplicates, tiltVerdict, type Progress, type Sequence } from './lib/curate';
+import { analyzeAll, buildDecisions, curate, distance, sameSceneFor, groupDuplicates, keystoneVerdict, tiltVerdict, type Progress, type Sequence } from './lib/curate';
 import { fitBox, photoOrientation } from './lib/geometry';
 import { level, straighten, unstraighten } from './lib/straighten';
 
@@ -51,7 +51,8 @@ interface State {
   setAskOpen: (open: boolean) => void;
   resolve: (id: string, choice: string | boolean) => Promise<void>;
   /** on/off uses the detected tilt; a number sets the correction by hand (0 = as shot). */
-  setStraight: (photoId: string, on: boolean | number) => Promise<void>;
+  /** on/off uses what was detected; { tilt, keystone } sets the correction by hand (0, 0 = as shot). */
+  setStraight: (photoId: string, on: boolean | { tilt: number; keystone: number }) => Promise<void>;
 }
 
 const defaultStyle: StyleOptions = {
@@ -134,10 +135,13 @@ export const useStore = create<State>((set, get) => {
       groupDuplicates(get().photos);
       set((s) => ({ smartMode: hasClip, photos: [...s.photos] }));
       // Level clearly crooked keepers automatically (undo is in the photo's detail panel).
-      const crooked = get().photos.filter((p) => p.analysis && !p.analysis.reject && !p.straightened && tiltVerdict(p.analysis) === 'fix');
+      const crooked = get().photos.filter(
+        (p) => p.analysis && !p.analysis.reject && p.straightened == null && (tiltVerdict(p.analysis) === 'fix' || keystoneVerdict(p.analysis) === 'fix'),
+      );
       for (const [i, p] of crooked.entries()) {
         set({ analyzing: { stage: 'Straightening crooked shots', done: i, total: crooked.length } });
-        replacePhoto(p.id, await level(p, p.analysis!.tilt!));
+        const a = p.analysis!;
+        replacePhoto(p.id, await level(p, tiltVerdict(a) === 'fix' ? a.tilt! : 0, keystoneVerdict(a) === 'fix' ? a.keystone! : 0));
       }
       set({ analyzing: null });
       get().autoPick();
@@ -169,12 +173,13 @@ export const useStore = create<State>((set, get) => {
     setStraight: async (photoId, on) => {
       const p = get().byId.get(photoId);
       if (!p) return;
-      if (typeof on === 'number') {
-        replacePhoto(photoId, Math.abs(on) < 0.05 ? unstraighten(p) : await straighten(p, on));
+      if (typeof on === 'object') {
+        const none = Math.abs(on.tilt) < 0.05 && Math.abs(on.keystone) < 0.05;
+        replacePhoto(photoId, none ? unstraighten(p) : await straighten(p, on.tilt, on.keystone));
         set((s) => ({ decisions: s.decisions.filter((d) => !(d.kind === 'straighten' && d.photoId === photoId)) }));
         return;
       }
-      if (on && p.analysis?.tilt) replacePhoto(photoId, await level(p, p.analysis.tilt));
+      if (on && p.analysis) replacePhoto(photoId, await level(p, p.analysis.tilt ?? 0, keystoneVerdict(p.analysis) === 'fix' ? p.analysis.keystone! : 0));
       if (!on) replacePhoto(photoId, unstraighten(p));
     },
     togglePick: (id) => set((s) => ({ picks: s.picks.includes(id) ? s.picks.filter((x) => x !== id) : [...s.picks, id] })),
