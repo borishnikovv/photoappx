@@ -2,6 +2,7 @@ import type { Analysis, Decision, FaceBox, Photo } from '../types';
 import type { TechResult } from '../workers/technical.worker';
 import { detectFaces } from './faces';
 import { photoOrientation } from './geometry';
+import { photoBonus } from './taste';
 
 interface ClipResult {
   embedding: Float32Array;
@@ -332,7 +333,9 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
   if (!n) return [];
   const D = cands.map((a, i) => cands.map((b, j) => (i === j ? Infinity : j < i ? 0 : distance(a.analysis!, b.analysis!))));
   for (let i = 0; i < n; i++) for (let j = 0; j < i; j++) D[i][j] = D[j][i];
-  const score = (i: number) => cands[i].analysis!.score;
+  // Your taste (thumbs up/down) nudges scores a few points either way.
+  const bonus = cands.map(photoBonus);
+  const score = (i: number) => cands[i].analysis!.score + bonus[i];
   // "Same shot" radius, learned from this album (half the photos have a twin closer than this), but
   // never so small that near-repeats (a burst, a stereo pair, a slight reframe) count as variety.
   const sameScene = sameSceneFor(cands.map((p) => p.analysis!));

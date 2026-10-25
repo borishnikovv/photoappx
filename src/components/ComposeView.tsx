@@ -5,6 +5,9 @@ import { compatibleTemplates, rebuildSection, scoreSection, templateById } from 
 import { SLIDE_H, SLIDE_W, slideCount } from '../lib/geometry';
 import type { Family, Section } from '../types';
 import { LOOK_NAMES, type Look } from '../lib/grade';
+import { Thumbs } from './Thumbs';
+import { voteLayout } from '../lib/taste';
+import { GRID_W, GRID_X, firstSlideCheck } from '../lib/gridcheck';
 
 const FRAMES = ['#f4f1ea', '#ffffff', '#0d0d0d'];
 const FAMILIES: { id: Family; label: string }[] = [
@@ -72,6 +75,64 @@ function Preview({ onClose }: { onClose: () => void }) {
       </div>
       <div className="mono faint" style={{ position: 'absolute', bottom: 24 }}>
         Swipe · Esc to close
+      </div>
+    </div>
+  );
+}
+
+/** How the post first appears: alone in the feed, and cropped to 3:4 in the profile grid. */
+function GridCheck({ onClose }: { onClose: () => void }) {
+  const { carousels, active, byId, style, picks } = useStore();
+  const c = carousels[active];
+  const issues = useMemo(() => firstSlideCheck(c, byId), [c, byId]);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    addEventListener('keydown', k);
+    return () => removeEventListener('keydown', k);
+  }, [onClose]);
+  const feedW = Math.min(300, innerWidth - 64), feed = feedW / SLIDE_W;
+  const cellW = Math.min(110, (innerWidth - 80) / 3), cell = cellW / GRID_W;
+  // The rest of the grid: older posts, suggested by other photos, so the cover is seen in context.
+  const others = picks.slice(-8).map((id) => byId.get(id)?.thumb).filter(Boolean) as string[];
+  return (
+    <div className="modal" onClick={onClose}>
+      <div className="gridcheck" onClick={(e) => e.stopPropagation()}>
+        <div>
+          <div className="mono faint" style={{ marginBottom: 8 }}>In the feed</div>
+          <div style={{ width: feedW, height: SLIDE_H * feed, overflow: 'hidden', position: 'relative', borderRadius: 4 }}>
+            <CarouselCanvas carousel={c} photos={byId} style={style} scale={feed} />
+          </div>
+        </div>
+        <div>
+          <div className="mono faint" style={{ marginBottom: 8 }}>On your profile</div>
+          <div className="pgrid" style={{ gridTemplateColumns: `repeat(3, ${cellW}px)` }}>
+            <div style={{ width: cellW, height: SLIDE_H * cell, overflow: 'hidden', position: 'relative' }}>
+              <div style={{ position: 'absolute', left: -GRID_X * cell, top: 0 }}>
+                <CarouselCanvas carousel={c} photos={byId} style={style} scale={cell} />
+              </div>
+            </div>
+            {Array.from({ length: 8 }, (_, k) =>
+              others[k] ? <img key={k} src={others[k]} alt="" style={{ height: SLIDE_H * cell }} /> : <span key={k} style={{ height: SLIDE_H * cell }} />,
+            )}
+          </div>
+          <div className="gc-notes">
+            {issues.length ? (
+              issues.map((i) => (
+                <p key={i.text}>
+                  <span className="warn-dot" /> {i.text}
+                </p>
+              ))
+            ) : (
+              <p>
+                <span className="ok-dot" /> The cover holds up on its own and in the grid.
+              </p>
+            )}
+            {issues.length > 0 && <p className="faint">Try ↻ on the first layout, or move the photo with Pan.</p>}
+          </div>
+        </div>
+      </div>
+      <div className="mono faint" style={{ position: 'absolute', bottom: 24 }}>
+        Esc to close
       </div>
     </div>
   );
@@ -172,6 +233,8 @@ export function ComposeView() {
   const scale = fit * zoom;
   const [mode, setMode] = useState<EditMode>('frame');
   const [preview, setPreview] = useState(false);
+  const [grid, setGrid] = useState(false);
+  const coverIssues = useMemo(() => (c ? firstSlideCheck(c, byId).length : 0), [c, byId]);
   const [alts, setAlts] = useState<string | null>(null);
   // "Swap with…": the next photo tapped trades places with the selected one.
   const [swapFrom, setSwapFrom] = useState<{ sectionId: string; itemId: string } | null>(null);
@@ -290,6 +353,9 @@ export function ComposeView() {
             {slideCount(c)}/{style.maxSlides}
           </span>
         </div>
+        <button className="btn sm" onClick={() => setGrid(true)} title="How the first slide looks in the feed and on your profile grid">
+          Cover{coverIssues ? <span className="badge">{coverIssues}</span> : null}
+        </button>
         <button className="btn sm" onClick={() => setPreview(true)}>
           Preview
         </button>
@@ -333,6 +399,7 @@ export function ComposeView() {
                   <button className={`btn ghost sm ${sec.pinned ? 'pinned' : ''}`} title="Keep this layout when regenerating" onClick={() => s.togglePin(id)}>
                     {sec.pinned ? 'Pinned' : 'Pin'}
                   </button>
+                  <Thumbs id={id} what="layouts" onVote={(v) => voteLayout(id, sec.template, templateById(sec.template).family, v)} />
                   <button className="btn ghost icon sm" title="Remove" onClick={() => s.removeSection(id)}>
                     ×
                   </button>
@@ -426,6 +493,7 @@ export function ComposeView() {
         </div>
       </div>
       {preview && <Preview onClose={() => setPreview(false)} />}
+      {grid && <GridCheck onClose={() => setGrid(false)} />}
     </div>
   );
 }

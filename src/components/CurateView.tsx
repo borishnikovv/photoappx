@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import type { Photo } from '../types';
 import { AskModal } from './AskModal';
+import { Thumbs } from './Thumbs';
+import { votePhoto } from '../lib/taste';
 import { previewLevel } from '../lib/straighten';
 import { clipProblem, tiltVerdict } from '../lib/curate';
 
@@ -98,6 +100,7 @@ function Detail({ p, picked }: { p: Photo; picked: boolean }) {
             {new Date(p.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} · {p.width}×{p.height}
           </div>
         </div>
+        {a && <Thumbs id={p.id} what="photos" onVote={(v) => votePhoto(p, v)} />}
         <button className={`btn sm ${picked ? '' : 'primary'}`} onClick={() => togglePick(p.id)}>
           {picked ? 'Remove' : 'Add'}
         </button>

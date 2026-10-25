@@ -334,3 +334,18 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
 .model-status .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--good, #6fcf8e); }
 .model-status.off .dot { background: var(--warn, #e0b25b); }
 .model-status.on { border-color: transparent; padding: 0; color: var(--fg-2); }
+
+/* Cover check: feed and profile grid */
+.gridcheck { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-height: 90vh; overflow: auto; padding: 8px; }
+.pgrid { display: grid; gap: 2px; }
+.pgrid img, .pgrid span { width: 100%; object-fit: cover; display: block; background: var(--bg-2); opacity: .45; }
+.gc-notes { max-width: 340px; margin-top: 14px; font-size: 13px; }
+.gc-notes p { margin: 0 0 8px; display: flex; gap: 8px; align-items: baseline; }
+.warn-dot, .ok-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: #e0b25b; transform: translateY(-1px); }
+.ok-dot { background: var(--good); }
+.badge { display: inline-grid; place-items: center; min-width: 16px; height: 16px; margin-left: 6px; padding: 0 4px; border-radius: 8px; background: #e0b25b; color: #111; font-size: 10px; font-weight: 600; }
+
+/* Taste votes */
+.thumbs { display: inline-flex; gap: 0; }
+.thumbs .btn { filter: grayscale(1); opacity: .5; font-size: 12px; }
+.thumbs .btn[aria-pressed='true'] { filter: none; opacity: 1; background: var(--bg-2); }

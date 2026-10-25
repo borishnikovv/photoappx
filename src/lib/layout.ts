@@ -1,5 +1,6 @@
 import type { Carousel, Family, Item, Orientation, Photo, Section, StyleOptions } from '../types';
 import { closeness, distance } from './curate';
+import { layoutBias } from './taste';
 import { SLIDE_H as H, SLIDE_W as W, fitBox, photoOrientation, rng, sourceRect, uid } from './geometry';
 
 type Spec = Omit<Item, 'id'>;
@@ -911,7 +912,7 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
       if (t.span > left) continue;
       const ps = assign(t, queue.slice(0, t.family === 'spread' ? 7 : 6));
       if (!ps) continue;
-      let w = t.weight * (emph.boost[t.family] ?? 1);
+      let w = t.weight * (emph.boost[t.family] ?? 1) * layoutBias(t.id, t.family);
       if (recent[0] === t.id) w *= 0.1;
       else if (recent.includes(t.id)) w *= 0.5;
       // Keep the rhythm varied: a third section in a row from the same family has to earn it.
