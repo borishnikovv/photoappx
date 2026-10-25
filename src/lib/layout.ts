@@ -136,7 +136,16 @@ function coverCost(rect: Rect, it: { x: number; y: number; w: number; h: number;
     const fr = { x0: f.x, x1: f.x + f.w, y0: f.y, y1: f.y + f.h };
     faces += area(fr, { x0: u0, x1: u1, y0: v0, y1: v1 }) / Math.max(1e-6, f.w * f.h);
   }
-  return hit * (0.15 + busy) + faces * 4e6;
+  // The backdrop's main focus (its subject, or the middle when it has none) stays visible:
+  // covering a real subject costs several times more than covering busy detail.
+  let focus = 0;
+  if (!p.analysis?.faces?.length)
+    for (const b of protectedBoxes(p)) {
+      const covered = area({ x0: b.x, x1: b.x + b.w, y0: b.y, y1: b.y + b.h }, { x0: u0, x1: u1, y0: v0, y1: v1 }) / Math.max(1e-6, b.w * b.h);
+      // A real subject is nearly as protected as a face; the plain middle only mildly.
+      focus += b.wt > 0.5 ? covered * 2e6 : covered * 0.6 * hit;
+    }
+  return hit * (0.15 + busy) + focus + faces * 4e6;
 }
 
 /** Best spot for a photo laid over `bg`: calm areas first, then the preferred rhythm (`bias`). */
@@ -176,9 +185,7 @@ export const TEMPLATES: Template[] = [
   {
     id: 'spread3', label: 'Spread ×3', family: 'spread', span: 3, slots: [WIDE, TALL, TALL], weight: 1.5, hero: true,
     build: ([a, b, c], r, o) => {
-      // Sometimes the backdrop stops short and the last frame bridges it into the plain ground.
-      const bgW = r() > 0.5 ? 3 * W : Math.round(W * (2.55 + r() * 0.25));
-      const bg = mk(a, 0, 0, bgW, H);
+      const bg = mk(a, 0, 0, 3 * W, H);
       const B = fitBox(frameAspect(b, r), W * (0.58 + r() * 0.1), H * (0.64 + r() * 0.12));
       const C = fitBox(frameAspect(c, r), W * (0.58 + r() * 0.1), H * (0.64 + r() * 0.12));
       const high = r() > 0.5;
@@ -195,42 +202,6 @@ export const TEMPLATES: Template[] = [
       const seam = r() > 0.5 ? W : 2 * W;
       const at = placeOver(bg, a, box, straddle(seam, box.w), heights(box.h, 110), () => 0);
       return [bg, mk(b, at.x, at.y, box.w, box.h, ov(o))];
-    },
-  },
-  {
-    id: 'band2', label: '16:9 band', family: 'spread', span: 2, slots: [WIDE, ANY], weight: 1.1,
-    build: ([a, b], r, o) => {
-      // A cinematic 16:9 band across the cut with a little ground above and below, and one quieter
-      // frame (1:1 or 4:3) resting on a corner of it, half on the photo, half on the ground.
-      const bh = Math.round(H * (0.66 + r() * 0.1)), bw = Math.min(2 * W - 120, Math.round((bh * 16) / 9));
-      const bx = Math.round((2 * W - bw) / 2 + (r() - 0.5) * 120), by = Math.round((H - bh) / 2 + (r() - 0.5) * 80);
-      const band = mk(a, bx, by, bw, bh);
-      const box = fitBox(frameAspect(b, r), W * (0.55 + r() * 0.1), H * 0.6);
-      const corners = [
-        { x: bx - box.w * 0.3, y: by - box.h * 0.35 },
-        { x: bx + bw - box.w * 0.7, y: by - box.h * 0.35 },
-        { x: bx - box.w * 0.3, y: by + bh - box.h * 0.65 },
-        { x: bx + bw - box.w * 0.7, y: by + bh - box.h * 0.65 },
-      ].map((p) => ({ x: Math.max(50, Math.min(2 * W - box.w - 50, p.x)), y: Math.max(50, Math.min(H - box.h - 50, p.y)) }));
-      const at = corners
-        .map((p) => ({ ...p, c: coverCost({ x0: p.x, x1: p.x + box.w, y0: p.y, y1: p.y + box.h }, band, a) }))
-        .sort((p, q) => p.c - q.c)[0];
-      return [band, mk(b, at.x, at.y, box.w, box.h, ov(o))];
-    },
-  },
-  {
-    id: 'band3', label: '16:9 band ×3', family: 'spread', span: 3, slots: [WIDE, ANY, ANY], weight: 1.1,
-    build: ([a, b, c], r, o) => {
-      // The band runs through the middle slide; small frames sit on its two ends, crossing the cuts.
-      const bh = Math.round(H * (0.72 + r() * 0.12)), bw = Math.min(3 * W - 200, Math.round((bh * 16) / 9));
-      const bx = Math.round((3 * W - bw) / 2), by = Math.round((H - bh) / 2);
-      const band = mk(a, bx, by, bw, bh);
-      const B = fitBox(frameAspect(b, r), W * 0.56, H * 0.58);
-      const C = fitBox(frameAspect(c, r), W * 0.56, H * 0.62);
-      const up = r() > 0.5;
-      const pb = { x: W - B.w * 0.5, y: up ? 70 : H - B.h - 70 };
-      const pc = { x: 2 * W - C.w * 0.5, y: up ? H - C.h - 70 : 70 };
-      return [band, mk(b, pb.x, pb.y, B.w, B.h, ov(o)), mk(c, pc.x, pc.y, C.w, C.h, ov(o, 2))];
     },
   },
   // ---- Patterns from editorial carousel apps ----
@@ -530,8 +501,8 @@ function settleGroup(cells: { w: number; h: number; x: number; y: number }[], sp
 
 function makeMosaics(): Template[] {
   const out: Template[] = [];
-  // Where the two backdrops meet, in slides. Never right on a cut: the frames hide the join instead.
-  const joins: Record<number, number[]> = { 2: [0.8, 1.25], 3: [1.35, 1.7] };
+  // Where the two backdrops meet: always on a cut, so every backdrop starts and ends with a slide.
+  const joins: Record<number, number[]> = { 2: [1], 3: [1, 2] };
   for (const span of [2, 3])
     for (const join of joins[span])
       for (const g of GROUPS) {
@@ -566,6 +537,10 @@ TEMPLATES.push(...makeMosaics());
 
 export const templateById = (id: string) => TEMPLATES.find((t) => t.id === id)!;
 
+/** A photo that works as a ground behind prints: no faces, no single subject that would be hidden. */
+const groundOk = (p: Photo) => !p.analysis?.faces?.length && protectedBoxes(p).every((b) => b.wt <= 0.5);
+const groundSlots = (t: Template) => (t.id === 'column4-split' ? 2 : 1);
+
 const labDist = (a: Photo, b: Photo) => {
   const x = a.analysis?.lab, y = b.analysis?.lab;
   return x && y ? Math.hypot((x[0] - y[0]) * 0.5, x[1] - y[1], x[2] - y[2]) : 50;
@@ -573,8 +548,13 @@ const labDist = (a: Photo, b: Photo) => {
 
 /** Assign photos to a template's slots. The first candidate must be used, to keep the sequence. */
 function assign(t: Template, cands: Photo[]): Photo[] | null {
-  // Spreads: photos laid on a backdrop should belong to it, so try the closest colors first.
-  if (t.family === 'spread' && cands.length > 2) cands = [cands[0], ...cands.slice(1).sort((a, b) => labDist(a, cands[0]) - labDist(b, cands[0]))];
+  // Photos laid together tell one part of the story: the same moment first (closest in time),
+  // then, for spreads, colors that belong with the backdrop.
+  if (cands.length > 2) {
+    const c0 = cands[0];
+    const hours = (p: Photo) => Math.abs(p.date - c0.date) / 3.6e6;
+    cands = [c0, ...cands.slice(1).sort((a, b) => Math.min(6, hours(a)) * 8 + (t.family === 'spread' ? labDist(a, c0) * 0.3 : 0) - (Math.min(6, hours(b)) * 8 + (t.family === 'spread' ? labDist(b, c0) * 0.3 : 0)))];
+  }
   // Never two near-identical photos on the same layout (a backdrop with its look-alike on top).
   const a0 = cands[0].analysis;
   if (a0?.grid) cands = [cands[0], ...cands.slice(1).filter((c) => !c.analysis?.grid || distance(a0, c.analysis) > 0.3)];
@@ -584,6 +564,8 @@ function assign(t: Template, cands: Photo[]): Photo[] | null {
     if (slot === t.slots.length) return used.has(0);
     for (let i = 0; i < cands.length; i++) {
       if (used.has(i) || !t.slots[slot].includes(photoOrientation(cands[i]))) continue;
+      // Prints laid over a ground need a backdrop without faces or one clear subject to hide.
+      if (t.ground && slot < groundSlots(t) && !groundOk(cands[i])) continue;
       // …and no look-alike pairs anywhere in the layout.
       const ai = cands[i].analysis;
       if (ai?.grid && out.some((q) => q.analysis?.grid && distance(ai, q.analysis) <= 0.3)) continue;
@@ -611,9 +593,115 @@ export function finishSection(sec: Section, byId: Map<string, Photo>): Section {
   // Print columns are sized as a set (same width, even gaps); growing one would break the column.
   if (!templateById(sec.template)?.ground) for (const it of sec.items) if (!it.base) growToReadable(it, sec.span);
   for (const it of sec.items) artCrop(it, byId.get(it.photoId)!, sec.span);
+  snapBackdrops(sec.items, sec.span);
   if (!templateById(sec.template)?.rigid) settleOverlays(sec.items, byId);
   keepFacesOffSeams(sec, ps);
+  // Everything on top ends up on the shared system (print columns are built exactly already).
+  if (!templateById(sec.template)?.ground) alignOverlays(sec.items, byId, sec.span);
   return sec;
+}
+
+/**
+ * Backdrops start and end with slides: a backdrop either fills one slide or runs smoothly into
+ * the next and stops exactly at that slide's edge. Never a photo ending mid-slide.
+ */
+export function snapBackdrops(items: Spec[], span: number) {
+  for (const it of items) {
+    if (!it.base) continue;
+    const x0 = Math.max(0, Math.min(span - 1, Math.round(it.x / W)));
+    const x1 = Math.max(x0 + 1, Math.min(span, Math.round((it.x + it.w) / W)));
+    it.x = x0 * W;
+    it.w = (x1 - x0) * W;
+    if (it.h > H * 0.7) {
+      it.y = 0;
+      it.h = H;
+    }
+  }
+}
+
+const M = 80, OGAP = 40;
+/**
+ * Places photos on top on a shared system instead of at random: slide margins and centers, even
+ * shares across a cut (½ or ⅓ / ⅔), and lines shared with the other photos on top — the same
+ * top, bottom or center, or stacked with an even gap. Among those, each takes the spot that
+ * hides least of what's underneath. Photos of similar size are made exactly the same height.
+ */
+export function alignOverlays(items: Spec[], byId: Map<string, Photo>, span: number, fixed: Spec[] = []) {
+  const bases = [...items, ...fixed].filter((i) => i.base);
+  const ovs = items.filter((i) => !i.base && !i.bridge).sort((a, b) => b.w * b.h - a.w * a.h);
+  // Similar heights become equal (keeping each photo's shape), so frames read as a set.
+  for (let i = 0; i < ovs.length; i++)
+    for (let j = i + 1; j < ovs.length; j++) {
+      const a = ovs[i], b = ovs[j];
+      if (Math.max(a.h, b.h) / Math.min(a.h, b.h) > 1.2) continue;
+      const h = Math.round((a.h + b.h) / 2);
+      for (const it of [a, b]) {
+        const cx = it.x + it.w / 2, cy = it.y + it.h / 2;
+        it.w = Math.round((it.w / it.h) * h);
+        it.h = h;
+        it.x = Math.round(cx - it.w / 2);
+        it.y = Math.round(cy - it.h / 2);
+      }
+    }
+  const placed: Spec[] = fixed.filter((i) => !i.base);
+  for (const it of ovs) {
+    const { xs, ys, lines } = anchors(it, span, placed);
+    let best = { x: it.x, y: it.y }, bestC = Infinity;
+    for (const x of xs)
+      for (const y of ys) {
+        if (x < 20 || x + it.w > span * W - 20 || y < 20 || y + it.h > H - 20) continue;
+        const rect = { x0: x, x1: x + it.w, y0: y, y1: y + it.h };
+        let c = bases.reduce((t, b) => t + coverCost(rect, b, byId.get(b.photoId)!), 0) / (it.w * it.h);
+        for (const q of placed) c += (area(rect, { x0: q.x - OGAP / 2, x1: q.x + q.w + OGAP / 2, y0: q.y - OGAP / 2, y1: q.y + q.h + OGAP / 2 }) / (it.w * it.h)) * 6;
+        // A cut through a face (or the subject) of this photo.
+        c += seamCut(it, x, byId.get(it.photoId));
+        // Shared lines are the point: reward each one, lightly prefer staying near the layout's intent.
+        c -= lines(x, y) * 0.12;
+        c += (Math.abs(x - it.x) / W + Math.abs(y - it.y) / H) * 0.15;
+        if (c < bestC) [best, bestC] = [{ x, y }, c];
+      }
+    it.x = Math.round(best.x);
+    it.y = Math.round(best.y);
+    placed.push(it);
+  }
+}
+
+/** Candidate positions for a photo on top, and how many lines a position shares with others. */
+function anchors(it: { w: number; h: number }, span: number, others: Spec[]) {
+  const xs: number[] = [], ys: number[] = [];
+  for (let k = 0; k < span; k++) {
+    if (it.w <= W - 2 * M) xs.push(k * W + M, k * W + (W - it.w) / 2, k * W + W - it.w - M);
+    if (k > 0) for (const f of [1 / 3, 1 / 2, 2 / 3]) xs.push(k * W - it.w * f);
+  }
+  ys.push(M, (H - it.h) / 2, H - it.h - M);
+  for (const q of others) {
+    xs.push(q.x, q.x + q.w - it.w, q.x + q.w / 2 - it.w / 2, q.x + q.w + OGAP, q.x - it.w - OGAP);
+    ys.push(q.y, q.y + q.h - it.h, q.y + q.h / 2 - it.h / 2, q.y + q.h + OGAP, q.y - it.h - OGAP);
+  }
+  const near = (a: number, b: number) => Math.abs(a - b) < 2;
+  const lines = (x: number, y: number) => {
+    let n = 0;
+    for (const q of others) {
+      if ([q.y, q.y + q.h, q.y + q.h / 2].some((v, i) => near(v, [y, y + it.h, y + it.h / 2][i]))) n++;
+      if ([q.x, q.x + q.w].some((v, i) => near(v, [x, x + it.w][i]))) n++;
+      if (near(y, q.y + q.h + OGAP) || near(y + it.h + OGAP, q.y) || near(x, q.x + q.w + OGAP) || near(x + it.w + OGAP, q.x)) n++;
+    }
+    if (near(y, M) || near(y + it.h, H - M) || near(y, (H - it.h) / 2)) n += 0.5;
+    return n;
+  };
+  return { xs: [...new Set(xs.map(Math.round))], ys: [...new Set(ys.map(Math.round))], lines };
+}
+
+/** How badly a cut at a slide edge slices this photo's faces or subject if placed at x. */
+function seamCut(it: Spec, x: number, p?: Photo) {
+  if (!p) return 0;
+  const { sx, sw } = sourceRect(p, it);
+  let c = 0;
+  for (const b of protectedBoxes(p)) {
+    const l = x + ((b.x - sx) / sw) * it.w, r = x + ((b.x + b.w - sx) / sw) * it.w;
+    for (let s2 = W; s2 < 40 * W; s2 += W) if (l < s2 + 20 && r > s2 - 20) c += b.wt * 2;
+  }
+  return c;
 }
 
 /**
@@ -748,27 +836,52 @@ function settleOverlays(items: Spec[], byId: Map<string, Photo>) {
 }
 
 /**
- * What must not be sliced by a cut: faces if there are any, otherwise the photo's subject, taken
- * as the compact cluster of its most detailed cells (the cup, the cat, the motorcycle).
+ * What must not be sliced by a cut or covered: faces if there are any, otherwise the photo's
+ * subject — the patch that stands out in color and detail (the cup, the cat, the motorcycle).
  */
-function protectedBoxes(p: Photo): { x: number; y: number; w: number; h: number; wt: number }[] {
+export function protectedBoxes(p: Photo): { x: number; y: number; w: number; h: number; wt: number }[] {
   const faces = p.analysis?.faces;
   if (faces?.length) return faces.map((f) => ({ ...f, wt: 1 }));
-  const d = p.analysis?.detail;
-  // No clear subject (detail everywhere, or nowhere): photographers center what matters, so
-  // protect the middle of the frame.
+  const d = p.analysis?.detail, g = p.analysis?.grid, lab = p.analysis?.lab;
+  // No clear subject: photographers center what matters, so protect the middle of the frame.
   const middle = [{ x: 0.32, y: 0.25, w: 0.36, h: 0.5, wt: 0.5 }];
   if (!d) return middle;
-  const max = Math.max(...d);
-  if (max < 0.15) return middle;
-  let x0 = 8, x1 = 0, y0 = 8, y1 = 0, n = 0;
-  d.forEach((v, i) => {
-    if (v < 0.75 * max) return;
-    const cx = i % 8, cy = (i / 8) | 0;
-    x0 = Math.min(x0, cx); x1 = Math.max(x1, cx + 1); y0 = Math.min(y0, cy); y1 = Math.max(y1, cy + 1); n++;
+  // Saliency per cell: what stands out in color from the photo as a whole, plus fine detail,
+  // favoring the center a little (texture at the edges — wood grain, foliage — is rarely the point).
+  const color = Array.from({ length: 64 }, (_, i) =>
+    g && lab ? Math.hypot((g[i * 3] - lab[0]) * 0.6, g[i * 3 + 1] - lab[1], g[i * 3 + 2] - lab[2]) : 0,
+  );
+  const cMax = Math.max(1e-6, ...color), dMax = Math.max(1e-6, ...d);
+  if (dMax < 0.15 && cMax < 12) return middle;
+  const sal = d.map((v, i) => {
+    const cx = (i % 8) + 0.5, cy = ((i / 8) | 0) + 0.5;
+    const r = Math.hypot(cx - 4, cy - 4) / 5.66;
+    return (0.55 * (color[i] / cMax) + 0.45 * (v / dMax)) * (1 - 0.45 * r);
   });
-  // Detail spread all over (texture, crowds) isn't a single subject.
-  if ((x1 - x0) * (y1 - y0) > 30 || !n) return middle;
+  const top = sal.indexOf(Math.max(...sal));
+  // The subject is the connected patch of standout cells around the strongest one.
+  const keep = new Set([top]);
+  const stack = [top];
+  while (stack.length) {
+    const i = stack.pop()!;
+    const cx = i % 8, cy = (i / 8) | 0;
+    for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]]) {
+      const j = ny * 8 + nx;
+      if (nx < 0 || ny < 0 || nx > 7 || ny > 7 || keep.has(j) || sal[j] < 0.62 * sal[top]) continue;
+      keep.add(j);
+      stack.push(j);
+    }
+  }
+  let x0 = 8, x1 = 0, y0 = 8, y1 = 0;
+  for (const i of keep) {
+    const cx = i % 8, cy = (i / 8) | 0;
+    x0 = Math.min(x0, cx); x1 = Math.max(x1, cx + 1); y0 = Math.min(y0, cy); y1 = Math.max(y1, cy + 1);
+  }
+  // Standout cells everywhere (texture, crowds) aren't a single subject.
+  if ((x1 - x0) * (y1 - y0) > 36) return middle;
+  // The standout core is smaller than the thing itself (the rim of the cup, the rest of the bike).
+  const pad = 0.75;
+  x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(8, x1 + pad); y1 = Math.min(8, y1 + pad);
   return [{ x: x0 / 8, y: y0 / 8, w: (x1 - x0) / 8, h: (y1 - y0) / 8, wt: 0.6 }];
 }
 
@@ -1013,6 +1126,7 @@ export function rebuildSection(sec: Section, t: Template, ps: Photo[], o: StyleO
 /** After removing a photo: make sure the section is still covered edge to edge. */
 export function recoverSection(sec: Section, byId: Map<string, Photo>): Section {
   const items = coverSection(sec.items, byId, sec.span);
+  snapBackdrops(items, sec.span);
   return { ...sec, items };
 }
 
@@ -1059,10 +1173,14 @@ export function addBridges(c: Carousel, reserve: Photo[], byId: Map<string, Phot
       }
       return c2 + (high ? y : H - box.h - y) * 60;
     };
-    let best = { x: seam - box.w / 2, y: 100 }, bestC = Infinity;
-    for (const x of straddle(seam, box.w))
-      for (const y of heights(box.h, 100)) {
-        const c2 = cost(x, y);
+    // Even shares of the cut (½, ⅓/⅔), on the slide margins or lined up with photos nearby.
+    const neighbours = near.filter((it) => !it.base) as Spec[];
+    const { ys, lines } = anchors(box, 1, neighbours);
+    let best = { x: seam - box.w / 2, y: (H - box.h) / 2 }, bestC = Infinity;
+    for (const x of [1 / 3, 1 / 2, 2 / 3].map((f) => Math.round(seam - box.w * f)))
+      for (const y of ys) {
+        if (y < 20 || y + box.h > H - 20) continue;
+        const c2 = cost(x, y) - lines(x, y) * 0.12 * box.w * box.h;
         if (c2 < bestC) [best, bestC] = [{ x, y }, c2];
       }
     high = !high;

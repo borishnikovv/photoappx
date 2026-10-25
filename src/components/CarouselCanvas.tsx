@@ -39,25 +39,37 @@ interface ItemProps {
   onGuides: (g: Guides) => void;
   /** SVG filter id carrying this photo's color grade, if any. */
   filter?: string;
+  /** Another photo is lining up with this one right now. */
+  partner?: boolean;
 }
 
-type Rect = { x: number; y: number; w: number; h: number };
-export type Guides = { x: number[]; y: number[] };
-type Target = { v: number; photo: boolean };
+type Rect = { id?: string; x: number; y: number; w: number; h: number };
+/** What's drawn while dragging: guide segments, the photos being aligned to, and even gaps. */
+export type Guides = {
+  lines: { axis: 'x' | 'y'; v: number; from: number; to: number; strong: boolean }[];
+  partners: string[];
+  gaps: { axis: 'x' | 'y'; a: number; b: number; at: number }[];
+};
+const NO_GUIDES: Guides = { lines: [], partners: [], gaps: [] };
+type Target = { v: number; photo?: Rect; gap?: boolean };
+
+/** The same spacing the layouts use: slide margins and the gap between stacked photos. */
+const MARGIN = 80, GAP = 40;
 
 /**
- * The closest alignment for any of an item's edges/center: other photos' edges and centers
- * first (they win ties), then slide edges and centers.
+ * The closest alignment for any of an item's edges/center: other photos first (edges, centers,
+ * an even gap beside them — they win ties), then slide margins, centers and edges.
  */
 function snapBest(vs: number[], targets: Target[], tol: number) {
-  let best: { i: number; t: number; photo: boolean; d: number } | null = null;
+  let best: { i: number; t: Target; d: number } | null = null;
   vs.forEach((v, i) => {
     for (const t of targets) {
-      const d = Math.abs(v - t.v) - (t.photo ? 0.5 : 0);
-      if (Math.abs(v - t.v) < tol && (!best || d < best.d)) best = { i, t: t.v, photo: t.photo, d };
+      // Lining up with a photo nearby beats a slide line unless the slide line is much closer.
+      const d = Math.abs(v - t.v) - (t.photo ? tol * 0.4 : 0);
+      if (Math.abs(v - t.v) < tol && (!best || d < best.d)) best = { i, t, d };
     }
   });
-  return best as { i: number; t: number; photo: boolean; d: number } | null;
+  return best as { i: number; t: Target; d: number } | null;
 }
 
 /**
@@ -91,7 +103,7 @@ function cropEdge(photo: Photo, s: Item, edge: Edge, d: number): Partial<Item> {
   return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), crop: { fx: sx + sw / 2, fy: sy + sh / 2, zoom } };
 }
 
-function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode, onSelect, onChange, others, slides, onGuides, filter }: ItemProps) {
+function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode, onSelect, onChange, others, slides, onGuides, filter, partner }: ItemProps) {
   const url = usePreview(photo);
   const drag = useRef<{ x: number; y: number; start: Item; kind: 'move' | 'pan' | 'resize' | Edge } | null>(null);
   const { sx, sy, sw, sh } = sourceRect(photo, item);
@@ -125,32 +137,72 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
       onChange({ crop: { ...s.crop, fx, fy } });
     } else {
       const origin = ax - item.x;
+      const L0 = origin + s.x + dx, T0 = s.y + dy;
+      // Only photos in the same area count: on the slides this one touches, or right next to it.
+      const near = others.filter((o) => o.x < L0 + s.w + SLIDE_W * 0.6 && o.x + o.w > L0 - SLIDE_W * 0.6);
       const xs: Target[] = [], ys: Target[] = [];
-      for (let k = 0; k <= slides; k++) xs.push({ v: k * SLIDE_W, photo: false }, { v: k * SLIDE_W + SLIDE_W / 2, photo: false });
-      ys.push({ v: 0, photo: false }, { v: SLIDE_H, photo: false }, { v: SLIDE_H / 2, photo: false });
-      for (const o of others) {
-        xs.push({ v: o.x, photo: true }, { v: o.x + o.w / 2, photo: true }, { v: o.x + o.w, photo: true });
-        ys.push({ v: o.y, photo: true }, { v: o.y + o.h / 2, photo: true }, { v: o.y + o.h, photo: true });
+      for (let k = 0; k <= slides; k++)
+        xs.push({ v: k * SLIDE_W }, { v: k * SLIDE_W + SLIDE_W / 2 }, { v: k * SLIDE_W + MARGIN }, { v: k * SLIDE_W - MARGIN });
+      ys.push({ v: 0 }, { v: SLIDE_H }, { v: SLIDE_H / 2 }, { v: MARGIN }, { v: SLIDE_H - MARGIN });
+      for (const o of near) {
+        xs.push({ v: o.x, photo: o }, { v: o.x + o.w / 2, photo: o }, { v: o.x + o.w, photo: o });
+        ys.push({ v: o.y, photo: o }, { v: o.y + o.h / 2, photo: o }, { v: o.y + o.h, photo: o });
       }
+      // Edges of this photo that may snap: left/center/right (and top/middle/bottom), plus an
+      // even gap to a neighbour on either side.
+      const gapX = near.flatMap((o) => [{ v: o.x + o.w + GAP, photo: o, gap: true }, { v: o.x - GAP, photo: o, gap: true }]);
+      const gapY = near.flatMap((o) => [{ v: o.y + o.h + GAP, photo: o, gap: true }, { v: o.y - GAP, photo: o, gap: true }]);
+      const guidesFor = (hx: ReturnType<typeof snapBest>, hy: ReturnType<typeof snapBest>, x: number, y: number, w: number, h: number): Guides => {
+        const g: Guides = { lines: [], partners: [], gaps: [] };
+        for (const [hit, axis] of [[hx, 'x'], [hy, 'y']] as const) {
+          if (!hit) continue;
+          const o = hit.t.photo;
+          if (o?.id) g.partners.push(o.id);
+          if (hit.t.gap && o) {
+            g.gaps.push(
+              axis === 'x'
+                ? { axis, a: Math.min(x + w, o.x + o.w), b: Math.max(x, o.x), at: Math.max(y, o.y) + Math.min(h, o.h) / 2 }
+                : { axis, a: Math.min(y + h, o.y + o.h), b: Math.max(y, o.y), at: Math.max(x, o.x) + Math.min(w, o.w) / 2 },
+            );
+            continue;
+          }
+          // A segment spanning both photos (or the whole slide for slide lines).
+          const [from, to] = o
+            ? axis === 'x' ? [Math.min(y, o.y), Math.max(y + h, o.y + o.h)] : [Math.min(x, o.x), Math.max(x + w, o.x + o.w)]
+            : axis === 'x' ? [0, SLIDE_H] : [Math.floor(x / SLIDE_W) * SLIDE_W, Math.ceil((x + w) / SLIDE_W) * SLIDE_W];
+          g.lines.push({ axis, v: hit.t.v, from, to, strong: !!o });
+        }
+        return g;
+      };
       if (d.kind === 'move') {
-        const L = origin + s.x + dx;
-        const T = s.y + dy;
-        const hx = snapBest([L, L + s.w / 2, L + s.w], xs, tol);
-        const hy = snapBest([T, T + s.h / 2, T + s.h], ys, tol);
-        const x = hx ? hx.t - [0, s.w / 2, s.w][hx.i] - origin : L - origin;
-        const y = hy ? hy.t - [0, s.h / 2, s.h][hy.i] : T;
-        onGuides({ x: hx ? [hx.t] : [], y: hy ? [hy.t] : [] });
+        const hx = snapBest([L0, L0 + s.w / 2, L0 + s.w], xs, tol);
+        // Gaps: our left edge sits a gap right of a neighbour, or our right edge a gap left of one.
+        const hxGap = snapBest([L0], gapX.filter((t) => t.photo && t.v > t.photo.x), tol) ?? snapBest([L0 + s.w], gapX.filter((t) => t.photo && t.v < t.photo.x), tol);
+        const hy = snapBest([T0, T0 + s.h / 2, T0 + s.h], ys, tol);
+        const hyGap = snapBest([T0], gapY.filter((t) => t.photo && t.v > t.photo.y), tol) ?? snapBest([T0 + s.h], gapY.filter((t) => t.photo && t.v < t.photo.y), tol);
+        const useX = hxGap && (!hx || hxGap.d < hx.d) ? { ...hxGap, i: hxGap.t.v > hxGap.t.photo!.x ? 0 : 2 } : hx;
+        const useY = hyGap && (!hy || hyGap.d < hy.d) ? { ...hyGap, i: hyGap.t.v > hyGap.t.photo!.y ? 0 : 2 } : hy;
+        const x = useX ? useX.t.v - [0, s.w / 2, s.w][useX.i] - origin : L0 - origin;
+        const y = useY ? useY.t.v - [0, s.h / 2, s.h][useY.i] : T0;
+        onGuides(guidesFor(useX, useY, origin + x, y, s.w, s.h));
         onChange({ x: Math.round(x), y: Math.round(y) });
       } else {
-        // Resize keeps the frame's shape; the right or bottom edge snaps to its neighbours.
+        // Resize keeps the frame's shape; edges snap to neighbours, and a photo can take on a
+        // neighbour's exact height or width so the two read as a pair.
         const ratio = s.w / s.h;
         let w = Math.max(120, s.w + dx);
         const R = origin + s.x + w;
         const hx = snapBest([R], xs, tol);
         const hy = snapBest([s.y + w / ratio], ys, tol);
-        if (hx) w = hx.t - origin - s.x;
-        else if (hy) w = (hy.t - s.y) * ratio;
-        onGuides({ x: hx ? [hx.t] : [], y: !hx && hy ? [hy.t] : [] });
+        const same = near.map((o) => ({ o, d: Math.min(Math.abs(o.h - w / ratio), Math.abs(o.w - w)) })).sort((a, b) => a.d - b.d)[0];
+        let partner: Rect | undefined;
+        if (same && same.d < tol) {
+          partner = same.o;
+          w = Math.abs(same.o.h - w / ratio) < Math.abs(same.o.w - w) ? same.o.h * ratio : same.o.w;
+        } else if (hx) w = hx.t.v - origin - s.x;
+        else if (hy) w = (hy.t.v - s.y) * ratio;
+        const g = partner ? { ...NO_GUIDES, partners: [partner.id!] } : guidesFor(hx, !hx ? hy : null, origin + s.x, s.y, w, w / ratio);
+        onGuides(g);
         onChange({ w: Math.round(w), h: Math.round(w / ratio) });
       }
     }
@@ -158,7 +210,7 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
 
   const up = () => {
     drag.current = null;
-    onGuides({ x: [], y: [] });
+    onGuides(NO_GUIDES);
   };
 
   const wheel = (e: React.WheelEvent) => {
@@ -169,7 +221,7 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
   const b = item.border * scale;
   return (
     <div
-      className={`item ${selected ? 'sel' : ''}`}
+      className={`item ${selected ? 'sel' : ''} ${partner ? 'partner' : ''}`}
       style={{
         left: (ax - item.border) * scale,
         top: (item.y - item.border) * scale,
@@ -220,7 +272,7 @@ interface Props {
 
 export function CarouselCanvas({ carousel, photos, style, scale, editable, mode, guides, selected, onSelect, onChange, renderSection }: Props) {
   const n = slideCount(carousel);
-  const [guidesOn, setGuidesOn] = useState<Guides>({ x: [], y: [] });
+  const [guidesOn, setGuidesOn] = useState<Guides>(NO_GUIDES);
   // Every photo's rectangle in canvas px, for aligning to neighbours while dragging.
   const rects = useMemo(() => {
     let st = 0;
@@ -291,16 +343,33 @@ export function CarouselCanvas({ carousel, photos, style, scale, editable, mode,
                 filter={grades.byItem.get(it.id)}
                 slides={n}
                 onGuides={setGuidesOn}
+                partner={guidesOn.partners.includes(it.id)}
               />
             );
           });
         })}
       </div>
-      {guidesOn.x.map((x) => (
-        <div key={`gx${x}`} className="align-guide v" style={{ left: x * scale }} />
+      {guidesOn.lines.map((l) => (
+        <div
+          key={`${l.axis}${l.v}`}
+          className={`align-guide ${l.axis === 'x' ? 'v' : 'h'} ${l.strong ? 'strong' : ''}`}
+          style={
+            l.axis === 'x'
+              ? { left: l.v * scale, top: l.from * scale - 10, height: (l.to - l.from) * scale + 20 }
+              : { top: l.v * scale, left: l.from * scale - 10, width: (l.to - l.from) * scale + 20 }
+          }
+        />
       ))}
-      {guidesOn.y.map((y) => (
-        <div key={`gy${y}`} className="align-guide h" style={{ top: y * scale }} />
+      {guidesOn.gaps.map((g) => (
+        <div
+          key={`gap${g.axis}${g.a}`}
+          className={`gap-mark ${g.axis}`}
+          style={
+            g.axis === 'x'
+              ? { left: g.a * scale, width: (g.b - g.a) * scale, top: g.at * scale }
+              : { top: g.a * scale, height: (g.b - g.a) * scale, left: g.at * scale }
+          }
+        />
       ))}
       {guides &&
         Array.from({ length: n }, (_, i) => (

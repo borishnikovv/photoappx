@@ -209,6 +209,27 @@ export function CurateView() {
                   {i != null && <span className="num">{i + 1}</span>}
                   {p.analysis && <span className="score">{p.analysis.score}</span>}
                   {cut && <span className="x">{p.analysis!.groupBest === false ? 'DUP' : 'CUT'}</span>}
+                  {reviewed && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className={`tile-toggle ${i != null ? 'in' : ''}`}
+                      title={i != null ? 'Remove from the carousel' : 'Add to the carousel'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        togglePick(p.id);
+                      }}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        togglePick(p.id);
+                      }}
+                    >
+                      {i != null ? '− Remove' : '+ Add'}
+                    </span>
+                  )}
                 </button>
               );
             })}

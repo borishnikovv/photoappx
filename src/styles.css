@@ -282,9 +282,24 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
 }
 
 /* Alignment guide while dragging next to another photo. */
-.align-guide { position: absolute; z-index: 60; pointer-events: none; background: #4cc2ff; }
-.align-guide.v { top: -12px; bottom: -12px; width: 1px; }
-.align-guide.h { left: -12px; right: -12px; height: 1px; }
+/* Alignment while dragging: guide segments between the photos that line up, the partner photo
+   lit up, and a marker for an even gap. */
+.align-guide { position: absolute; z-index: 60; pointer-events: none; background: rgba(76, 194, 255, 0.55); animation: guide-in 0.12s ease-out; }
+.align-guide.strong { background: #4cc2ff; box-shadow: 0 0 6px rgba(76, 194, 255, 0.8); }
+.align-guide.v { width: 1px; margin-left: -0.5px; }
+.align-guide.h { height: 1px; margin-top: -0.5px; }
+.align-guide.v::before, .align-guide.v::after, .align-guide.h::before, .align-guide.h::after { content: ''; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: inherit; }
+.align-guide.v::before { top: 0; left: -2px; } .align-guide.v::after { bottom: 0; left: -2px; }
+.align-guide.h::before { left: 0; top: -2px; } .align-guide.h::after { right: 0; top: -2px; }
+.item.partner { outline: 2px solid #4cc2ff; outline-offset: 2px; box-shadow: 0 0 0 6px rgba(76, 194, 255, 0.18); transition: outline-color 0.12s, box-shadow 0.12s; }
+.gap-mark { position: absolute; z-index: 61; pointer-events: none; animation: guide-in 0.12s ease-out; }
+.gap-mark.x { height: 0; border-top: 1px dashed #ff7ad9; }
+.gap-mark.y { width: 0; border-left: 1px dashed #ff7ad9; }
+.gap-mark.x::before, .gap-mark.x::after { content: ''; position: absolute; top: -5px; width: 1px; height: 9px; background: #ff7ad9; }
+.gap-mark.x::before { left: 0; } .gap-mark.x::after { right: 0; }
+.gap-mark.y::before, .gap-mark.y::after { content: ''; position: absolute; left: -5px; height: 1px; width: 9px; background: #ff7ad9; }
+.gap-mark.y::before { top: 0; } .gap-mark.y::after { bottom: 0; }
+@keyframes guide-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* Crop: drag any edge of the selected photo. */
 .crop-edge { position: absolute; background: #fff; z-index: 2; }
@@ -355,3 +370,14 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
 .ask-options .tilt-opt .skip { padding: 6px 10px; border-radius: 999px; justify-self: center; font-size: 12px; }
 .tilt-opt.skip > button:first-child { opacity: 0.35; }
 .tilt-opt .skip[aria-pressed='true'] { color: var(--bad); border-color: var(--bad); }
+
+/* Add / remove right on the photo grid */
+.tile-toggle {
+  position: absolute; right: 7px; top: 7px; z-index: 2; font: 11px var(--mono); padding: 4px 8px; border-radius: 999px;
+  background: rgba(10, 10, 10, 0.72); color: var(--fg); border: 1px solid rgba(255, 255, 255, 0.18); backdrop-filter: blur(6px);
+  opacity: 0; transform: translateY(-3px); transition: opacity 0.15s, transform 0.15s, background 0.15s; cursor: pointer;
+}
+.tile:hover .tile-toggle, .tile:focus-visible .tile-toggle, .tile[aria-selected='true'] .tile-toggle, .tile-toggle:focus-visible { opacity: 1; transform: none; }
+.tile-toggle:hover { background: var(--fg); color: var(--bg); }
+.tile-toggle.in:hover { background: var(--bad); color: #111; border-color: var(--bad); }
+@media (hover: none) { .tile-toggle { opacity: 1; transform: none; } }
