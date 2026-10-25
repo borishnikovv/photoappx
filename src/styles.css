@@ -309,3 +309,5 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
 .alt:hover { border-color: var(--fg-2); }
 .alt .mono { color: var(--fg-2); }
 .btn.pinned { color: var(--accent); }
+
+.select { background: var(--bg); border: 1px solid var(--line-2); border-radius: 999px; height: 30px; padding: 0 10px; color: var(--fg); font-size: 12px; }

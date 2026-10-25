@@ -88,6 +88,8 @@ export interface Item {
   bridge?: boolean;
   /** Backdrop that fills its slides edge to edge; it pans instead of moving, so nothing is ever left empty. */
   base?: boolean;
+  /** Shown in black-and-white (an accent), whatever the look. */
+  mono?: boolean;
 }
 
 export interface Section {
@@ -116,5 +118,11 @@ export interface StyleOptions {
   frame: string;
   /** How photos laid on top look: clean edges (no frame, no shadow) or framed like prints. */
   overlay: 'clean' | 'framed';
+  /** One color look across the carousel. */
+  look?: 'natural' | 'warm' | 'film' | 'matte' | 'bw';
+  /** Gently even out color casts and brightness between photos. */
+  matchTones?: boolean;
+  /** Turn some of the frames black-and-white for contrast. */
+  bwAccents?: boolean;
   maxSlides: number;
 }

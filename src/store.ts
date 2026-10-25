@@ -77,8 +77,32 @@ const defaultStyle: StyleOptions = {
   bg: 'auto',
   frame: '#f4f1ea',
   overlay: 'clean',
+  look: 'natural',
+  matchTones: true,
+  bwAccents: false,
   maxSlides: 20,
 };
+
+/**
+ * Black-and-white accents: about a quarter of the frames on top, the least colorful ones first
+ * (they lose least), never two side by side in the same layout.
+ */
+function withAccents(c: Carousel, byId: Map<string, Photo>, on: boolean): Carousel {
+  const clear = c.sections.map((s) => ({ ...s, items: s.items.map((i) => ({ ...i, mono: false })) }));
+  if (!on) return { ...c, sections: clear };
+  const ovs = clear.flatMap((s) => s.items.filter((i) => !i.base).map((i) => ({ s, i })));
+  const want = Math.max(1, Math.round(ovs.length * 0.25));
+  const ranked = [...ovs].sort((a, b) => (byId.get(a.i.photoId)?.analysis?.colorfulness ?? 0.5) - (byId.get(b.i.photoId)?.analysis?.colorfulness ?? 0.5));
+  const picked = new Set<string>();
+  const usedSections = new Set<string>();
+  for (const { s, i } of ranked) {
+    if (picked.size >= want) break;
+    if (usedSections.has(s.id)) continue;
+    picked.add(i.id);
+    usedSections.add(s.id);
+  }
+  return { ...c, sections: clear.map((s) => ({ ...s, items: s.items.map((i) => (picked.has(i.id) ? { ...i, mono: true } : i)) })) };
+}
 
 export const useStore = create<State>((set, get) => {
   // History: snapshots of the layouts before each change. A stream of tiny changes to the same
@@ -263,6 +287,10 @@ export const useStore = create<State>((set, get) => {
       set((s) => ({ style: { ...s.style, ...patch } }));
       // Changes that affect layout re-run it with the same seed, so the arrangement stays recognisable.
       if ((patch.maxSlides || patch.overlay || patch.families) && get().carousels.length) get().compose(false);
+      else if (patch.bwAccents != null && get().carousels.length) {
+        checkpoint();
+        set((s) => ({ carousels: s.carousels.map((c) => withAccents(c, s.byId, !!patch.bwAccents)) }));
+      }
     },
 
     compose: (reseed) => {
@@ -292,7 +320,8 @@ export const useStore = create<State>((set, get) => {
       set({
         carousels: VARIANTS.map((v, i) => {
           const c = withPins(generateCarousel(ps, { ...style, maxSlides: Math.max(1, style.maxSlides - heldSlides) }, base + i * 7919, v));
-          return { ...fixSlivers(addBridges(fixSlivers(c), reserveFor(c), byId, style, base + i)), ground: groundFor(picks.map((id) => byId.get(id)!).filter(Boolean)) };
+          const laid = { ...fixSlivers(addBridges(fixSlivers(c), reserveFor(c), byId, style, base + i)), ground: groundFor(picks.map((id) => byId.get(id)!).filter(Boolean)) };
+          return style.bwAccents ? withAccents(laid, byId, true) : laid;
         }),
         selected: null,
         step: 'compose',

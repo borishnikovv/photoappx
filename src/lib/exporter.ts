@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import type { Carousel, Photo, StyleOptions } from '../types';
 import { SLIDE_H, SLIDE_W, absoluteItems, backgroundOf, slideCount, sourceRect } from './geometry';
+import { albumTone, applyGrade, gradeFor, isIdentity } from './grade';
 
 /**
  * Renders each slide at exactly 1080x1350. Photos are decoded once at the resolution they're
@@ -9,6 +10,7 @@ import { SLIDE_H, SLIDE_W, absoluteItems, backgroundOf, slideCount, sourceRect }
 export async function renderSlides(c: Carousel, photos: Map<string, Photo>, o: StyleOptions, onProgress?: (i: number, n: number) => void) {
   const items = absoluteItems(c);
   const bg = backgroundOf(o, c);
+  const tone = albumTone([...new Set(items.map((i) => i.photoId))].map((id) => photos.get(id)!).filter(Boolean));
   const n = slideCount(c);
   const lastUse = new Map<string, number>();
   const needW = new Map<string, number>();
@@ -55,7 +57,20 @@ export async function renderSlides(c: Carousel, photos: Map<string, Photo>, o: S
       ctx.fillStyle = b ? o.frame : bg;
       if (b || it.shadow) ctx.fillRect(x - b, y - b, it.w + 2 * b, it.h + 2 * b);
       ctx.restore();
-      ctx.drawImage(img, sx * img.width, sy * img.height, sw * img.width, sh * img.height, x, y, it.w, it.h);
+      const grade = gradeFor(photos.get(it.photoId)!, o, tone, it.mono);
+      if (isIdentity(grade)) ctx.drawImage(img, sx * img.width, sy * img.height, sw * img.width, sh * img.height, x, y, it.w, it.h);
+      else {
+        // Grade just this frame's pixels, then lay it on the slide.
+        const tw = Math.max(1, Math.round(it.w)), th = Math.max(1, Math.round(it.h));
+        const tmp = new OffscreenCanvas(tw, th);
+        const tc = tmp.getContext('2d', { willReadFrequently: true })!;
+        tc.imageSmoothingQuality = 'high';
+        tc.drawImage(img, sx * img.width, sy * img.height, sw * img.width, sh * img.height, 0, 0, tw, th);
+        const px = tc.getImageData(0, 0, tw, th);
+        applyGrade(px.data, grade);
+        tc.putImageData(px, 0, 0);
+        ctx.drawImage(tmp, x, y, it.w, it.h);
+      }
     }
     out.push(await new Promise<Blob>((res) => canvas.toBlob((b) => res(b!), 'image/jpeg', 0.95)));
     for (const [id, last] of lastUse)

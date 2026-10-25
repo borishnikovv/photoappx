@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Carousel, Item, Photo, StyleOptions } from '../types';
 import { SLIDE_H, SLIDE_W, backgroundOf, clamp, slideCount, sourceRect } from '../lib/geometry';
 import { previewUrl } from '../lib/importer';
+import { albumTone, gradeFor, isIdentity, svgMatrix } from '../lib/grade';
 
 export type EditMode = 'frame' | 'photo' | 'crop';
 type Edge = 'l' | 'r' | 't' | 'b';
@@ -36,6 +37,8 @@ interface ItemProps {
   others: Rect[];
   slides: number;
   onGuides: (g: Guides) => void;
+  /** SVG filter id carrying this photo's color grade, if any. */
+  filter?: string;
 }
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -88,7 +91,7 @@ function cropEdge(photo: Photo, s: Item, edge: Edge, d: number): Partial<Item> {
   return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), crop: { fx: sx + sw / 2, fy: sy + sh / 2, zoom } };
 }
 
-function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode, onSelect, onChange, others, slides, onGuides }: ItemProps) {
+function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode, onSelect, onChange, others, slides, onGuides, filter }: ItemProps) {
   const url = usePreview(photo);
   const drag = useRef<{ x: number; y: number; start: Item; kind: 'move' | 'pan' | 'resize' | Edge } | null>(null);
   const { sx, sy, sw, sh } = sourceRect(photo, item);
@@ -185,7 +188,12 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
       onWheel={wheel}
     >
       <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
-        <img src={url} alt="" draggable={false} style={{ width: imgW, height: imgH, left: -sx * imgW, top: -sy * imgH }} />
+        <img
+          src={url}
+          alt=""
+          draggable={false}
+          style={{ width: imgW, height: imgH, left: -sx * imgW, top: -sy * imgH, filter: filter ? `url(#${filter})` : undefined }}
+        />
       </div>
       {selected && editable && mode === 'frame' && !item.base && <div className="handle" onPointerDown={(e) => down(e, 'resize')} />}
       {selected && editable && mode === 'crop' && !item.base &&
@@ -222,9 +230,42 @@ export function CarouselCanvas({ carousel, photos, style, scale, editable, mode,
       return sec.items.filter((it) => !it.base).map((it) => ({ id: it.id, x: o + it.x, y: it.y, w: it.w, h: it.h }));
     });
   }, [carousel]);
+  // Color grades, one SVG filter per distinct grade.
+  const grades = useMemo(() => {
+    const used = carousel.sections.flatMap((sec) => sec.items.map((it) => photos.get(it.photoId))).filter(Boolean) as Photo[];
+    const tone = albumTone(used);
+    const byItem = new Map<string, string>();
+    const defs: { id: string; values: string }[] = [];
+    const seen = new Map<string, string>();
+    for (const sec of carousel.sections)
+      for (const it of sec.items) {
+        const p = photos.get(it.photoId);
+        if (!p) continue;
+        const g = gradeFor(p, style, tone, it.mono);
+        if (isIdentity(g)) continue;
+        const values = svgMatrix(g);
+        let id = seen.get(values);
+        if (!id) {
+          id = `g${carousel.id.slice(-6)}${defs.length}`.replace(/[^a-z0-9]/gi, '');
+          seen.set(values, id);
+          defs.push({ id, values });
+        }
+        byItem.set(it.id, id);
+      }
+    return { byItem, defs };
+  }, [carousel, photos, style]);
   let start = 0;
   return (
     <div className="canvas" style={{ width: n * SLIDE_W * scale, height: SLIDE_H * scale, background: backgroundOf(style, carousel) }} onPointerDown={() => onSelect?.(null)}>
+      <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden>
+        <defs>
+          {grades.defs.map((d) => (
+            <filter key={d.id} id={d.id} colorInterpolationFilters="sRGB">
+              <feColorMatrix type="matrix" values={d.values} />
+            </filter>
+          ))}
+        </defs>
+      </svg>
       <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
         {carousel.sections.flatMap((sec, si) => {
           const origin = start * SLIDE_W;
@@ -247,6 +288,7 @@ export function CarouselCanvas({ carousel, photos, style, scale, editable, mode,
                 onSelect={() => onSelect?.({ sectionId: sec.id, itemId: it.id })}
                 onChange={(patch) => onChange?.(sec.id, it.id, patch)}
                 others={rects.filter((r) => r.id !== it.id)}
+                filter={grades.byItem.get(it.id)}
                 slides={n}
                 onGuides={setGuidesOn}
               />

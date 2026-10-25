@@ -4,6 +4,7 @@ import { CarouselCanvas, type EditMode } from './CarouselCanvas';
 import { compatibleTemplates, rebuildSection, scoreSection, templateById } from '../lib/layout';
 import { SLIDE_H, SLIDE_W, slideCount } from '../lib/geometry';
 import type { Family, Section } from '../types';
+import { LOOK_NAMES, type Look } from '../lib/grade';
 
 const FRAMES = ['#f4f1ea', '#ffffff', '#0d0d0d'];
 const FAMILIES: { id: Family; label: string }[] = [
@@ -208,6 +209,22 @@ export function ComposeView() {
           </button>
         ))}
         <div className="sep" />
+        <div className="field" title="One color look across the whole carousel">
+          <span className="mono faint">Look</span>
+          <select className="select" value={style.look ?? 'natural'} onChange={(e) => setStyle({ look: e.target.value as Look })}>
+            {LOOK_NAMES.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button className="chip" aria-pressed={style.matchTones !== false} title="Even out color casts and brightness between photos" onClick={() => setStyle({ matchTones: style.matchTones === false })}>
+          <span className="dot" /> Match tones
+        </button>
+        <button className="chip" aria-pressed={!!style.bwAccents} title="Turn some frames black-and-white for contrast" onClick={() => setStyle({ bwAccents: !style.bwAccents })}>
+          <span className="dot" /> B&W accents
+        </button>
         <div className="seg" title="How photos laid on top of others look">
           <button aria-pressed={style.overlay === 'clean'} onClick={() => setStyle({ overlay: 'clean' })}>
             Clean
@@ -318,6 +335,9 @@ export function ComposeView() {
                 onChange={(e) => updateItem(sel.sec.id, sel.it.id, { crop: { ...sel.it.crop, zoom: +e.target.value } })}
               />
             </div>
+            <button className="chip" aria-pressed={!!sel.it.mono} onClick={() => updateItem(sel.sec.id, sel.it.id, { mono: !sel.it.mono })}>
+              <span className="dot" /> B&W
+            </button>
             {!sel.it.base && (
               <>
                 <button
