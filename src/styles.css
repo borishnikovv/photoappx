@@ -280,3 +280,8 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
     linear-gradient(to right, transparent calc(33.33% - 0.5px), rgba(255,255,255,.45) calc(33.33% - 0.5px), rgba(255,255,255,.45) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px), transparent calc(66.66% - 0.5px), rgba(255,255,255,.45) calc(66.66% - 0.5px), rgba(255,255,255,.45) calc(66.66% + 0.5px), transparent calc(66.66% + 0.5px)),
     linear-gradient(to bottom, transparent calc(33.33% - 0.5px), rgba(255,255,255,.45) calc(33.33% - 0.5px), rgba(255,255,255,.45) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px), transparent calc(66.66% - 0.5px), rgba(255,255,255,.45) calc(66.66% - 0.5px), rgba(255,255,255,.45) calc(66.66% + 0.5px), transparent calc(66.66% + 0.5px));
 }
+
+/* Alignment guide while dragging next to another photo. */
+.align-guide { position: absolute; z-index: 60; pointer-events: none; background: #4cc2ff; }
+.align-guide.v { top: -12px; bottom: -12px; width: 1px; }
+.align-guide.h { left: -12px; right: -12px; height: 1px; }

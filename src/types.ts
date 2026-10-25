@@ -82,6 +82,8 @@ export interface Item {
   z: number;
   /** A photo laid on top of a slide edge, so the swipe reads as one continuous canvas. */
   bridge?: boolean;
+  /** Backdrop that fills its slides edge to edge; it pans instead of moving, so nothing is ever left empty. */
+  base?: boolean;
 }
 
 export interface Section {

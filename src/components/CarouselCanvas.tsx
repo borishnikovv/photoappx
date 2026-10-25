@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Carousel, Item, Photo, StyleOptions } from '../types';
 import { SLIDE_H, SLIDE_W, backgroundOf, clamp, slideCount, sourceRect } from '../lib/geometry';
 import { previewUrl } from '../lib/importer';
@@ -31,15 +31,32 @@ interface ItemProps {
   mode?: EditMode;
   onSelect?: () => void;
   onChange?: (patch: Partial<Item>) => void;
+  /** Other photos' edges and centers (canvas px), for alignment while dragging. */
+  others: Rect[];
+  slides: number;
+  onGuides: (g: Guides) => void;
 }
 
-/** Snaps the first of an item's edges/center that lands near a target (slide edges, centers, margins). */
-function snapAny(vs: number[], targets: number[], tol: number) {
-  for (let i = 0; i < vs.length; i++) for (const t of targets) if (Math.abs(vs[i] - t) < tol) return { i, t };
-  return null;
+type Rect = { x: number; y: number; w: number; h: number };
+export type Guides = { x: number[]; y: number[] };
+type Target = { v: number; photo: boolean };
+
+/**
+ * The closest alignment for any of an item's edges/center: other photos' edges and centers
+ * first (they win ties), then slide edges and centers.
+ */
+function snapBest(vs: number[], targets: Target[], tol: number) {
+  let best: { i: number; t: number; photo: boolean; d: number } | null = null;
+  vs.forEach((v, i) => {
+    for (const t of targets) {
+      const d = Math.abs(v - t.v) - (t.photo ? 0.5 : 0);
+      if (Math.abs(v - t.v) < tol && (!best || d < best.d)) best = { i, t: t.v, photo: t.photo, d };
+    }
+  });
+  return best as { i: number; t: number; photo: boolean; d: number } | null;
 }
 
-function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode, onSelect, onChange }: ItemProps) {
+function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode, onSelect, onChange, others, slides, onGuides }: ItemProps) {
   const url = usePreview(photo);
   const drag = useRef<{ x: number; y: number; start: Item; kind: 'move' | 'pan' | 'resize' } | null>(null);
   const { sx, sy, sw, sh } = sourceRect(photo, item);
@@ -51,7 +68,8 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
     e.stopPropagation();
     onSelect?.();
     (e.target as Element).setPointerCapture(e.pointerId);
-    drag.current = { x: e.clientX, y: e.clientY, start: item, kind: kind ?? (mode === 'photo' ? 'pan' : 'move') };
+    // Backdrops fill their slides, so dragging one pans the photo instead of moving the frame.
+    drag.current = { x: e.clientX, y: e.clientY, start: item, kind: kind ?? (mode === 'photo' || item.base ? 'pan' : 'move') };
   };
 
   const move = (e: React.PointerEvent) => {
@@ -66,26 +84,43 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
       const fx = clamp(s.crop.fx - (dx / s.w) * sw, sw / 2, 1 - sw / 2);
       const fy = clamp(s.crop.fy - (dy / s.h) * sh, sh / 2, 1 - sh / 2);
       onChange({ crop: { ...s.crop, fx, fy } });
-    } else if (d.kind === 'move') {
-      const origin = ax - item.x;
-      const xs: number[] = [];
-      for (let k = 0; k <= 20; k++) xs.push(k * SLIDE_W, k * SLIDE_W + SLIDE_W / 2, k * SLIDE_W + 100, k * SLIDE_W - 100);
-      const ys = [0, SLIDE_H, SLIDE_H / 2, 120, SLIDE_H - 120];
-      const L = origin + s.x + dx;
-      const T = s.y + dy;
-      const hx = snapAny([L, L + s.w / 2, L + s.w], xs, tol);
-      const hy = snapAny([T, T + s.h / 2, T + s.h], ys, tol);
-      const x = hx ? hx.t - [0, s.w / 2, s.w][hx.i] - origin : L - origin;
-      const y = hy ? hy.t - [0, s.h / 2, s.h][hy.i] : T;
-      onChange({ x: Math.round(x), y: Math.round(y) });
     } else {
-      const ratio = s.w / s.h;
-      const w = Math.max(120, s.w + dx);
-      onChange({ w: Math.round(w), h: Math.round(w / ratio) });
+      const origin = ax - item.x;
+      const xs: Target[] = [], ys: Target[] = [];
+      for (let k = 0; k <= slides; k++) xs.push({ v: k * SLIDE_W, photo: false }, { v: k * SLIDE_W + SLIDE_W / 2, photo: false });
+      ys.push({ v: 0, photo: false }, { v: SLIDE_H, photo: false }, { v: SLIDE_H / 2, photo: false });
+      for (const o of others) {
+        xs.push({ v: o.x, photo: true }, { v: o.x + o.w / 2, photo: true }, { v: o.x + o.w, photo: true });
+        ys.push({ v: o.y, photo: true }, { v: o.y + o.h / 2, photo: true }, { v: o.y + o.h, photo: true });
+      }
+      if (d.kind === 'move') {
+        const L = origin + s.x + dx;
+        const T = s.y + dy;
+        const hx = snapBest([L, L + s.w / 2, L + s.w], xs, tol);
+        const hy = snapBest([T, T + s.h / 2, T + s.h], ys, tol);
+        const x = hx ? hx.t - [0, s.w / 2, s.w][hx.i] - origin : L - origin;
+        const y = hy ? hy.t - [0, s.h / 2, s.h][hy.i] : T;
+        onGuides({ x: hx ? [hx.t] : [], y: hy ? [hy.t] : [] });
+        onChange({ x: Math.round(x), y: Math.round(y) });
+      } else {
+        // Resize keeps the frame's shape; the right or bottom edge snaps to its neighbours.
+        const ratio = s.w / s.h;
+        let w = Math.max(120, s.w + dx);
+        const R = origin + s.x + w;
+        const hx = snapBest([R], xs, tol);
+        const hy = snapBest([s.y + w / ratio], ys, tol);
+        if (hx) w = hx.t - origin - s.x;
+        else if (hy) w = (hy.t - s.y) * ratio;
+        onGuides({ x: hx ? [hx.t] : [], y: !hx && hy ? [hy.t] : [] });
+        onChange({ w: Math.round(w), h: Math.round(w / ratio) });
+      }
     }
   };
 
-  const up = () => (drag.current = null);
+  const up = () => {
+    drag.current = null;
+    onGuides({ x: [], y: [] });
+  };
 
   const wheel = (e: React.WheelEvent) => {
     if (!editable || !selected || mode !== 'photo' || !onChange) return;
@@ -105,7 +140,7 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
         background: style.frame,
         padding: b,
         boxShadow: item.shadow ? `0 ${14 * scale}px ${40 * scale}px rgba(0,0,0,.45)` : undefined,
-        cursor: editable ? (mode === 'photo' ? 'grab' : 'move') : undefined,
+        cursor: editable ? (mode === 'photo' || item.base ? 'grab' : 'move') : undefined,
       }}
       onPointerDown={(e) => down(e)}
       onPointerMove={move}
@@ -116,7 +151,7 @@ function PhotoItem({ item, ax, photo, scale, style, z, selected, editable, mode,
       <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
         <img src={url} alt="" draggable={false} style={{ width: imgW, height: imgH, left: -sx * imgW, top: -sy * imgH }} />
       </div>
-      {selected && editable && mode === 'frame' && <div className="handle" onPointerDown={(e) => down(e, 'resize')} />}
+      {selected && editable && mode === 'frame' && !item.base && <div className="handle" onPointerDown={(e) => down(e, 'resize')} />}
     </div>
   );
 }
@@ -137,6 +172,16 @@ interface Props {
 
 export function CarouselCanvas({ carousel, photos, style, scale, editable, mode, guides, selected, onSelect, onChange, renderSection }: Props) {
   const n = slideCount(carousel);
+  const [guidesOn, setGuidesOn] = useState<Guides>({ x: [], y: [] });
+  // Every photo's rectangle in canvas px, for aligning to neighbours while dragging.
+  const rects = useMemo(() => {
+    let st = 0;
+    return carousel.sections.flatMap((sec) => {
+      const o = st * SLIDE_W;
+      st += sec.span;
+      return sec.items.filter((it) => !it.base).map((it) => ({ id: it.id, x: o + it.x, y: it.y, w: it.w, h: it.h }));
+    });
+  }, [carousel]);
   let start = 0;
   return (
     <div className="canvas" style={{ width: n * SLIDE_W * scale, height: SLIDE_H * scale, background: backgroundOf(style, carousel) }} onPointerDown={() => onSelect?.(null)}>
@@ -161,11 +206,20 @@ export function CarouselCanvas({ carousel, photos, style, scale, editable, mode,
                 selected={selected?.itemId === it.id}
                 onSelect={() => onSelect?.({ sectionId: sec.id, itemId: it.id })}
                 onChange={(patch) => onChange?.(sec.id, it.id, patch)}
+                others={rects.filter((r) => r.id !== it.id)}
+                slides={n}
+                onGuides={setGuidesOn}
               />
             );
           });
         })}
       </div>
+      {guidesOn.x.map((x) => (
+        <div key={`gx${x}`} className="align-guide v" style={{ left: x * scale }} />
+      ))}
+      {guidesOn.y.map((y) => (
+        <div key={`gy${y}`} className="align-guide h" style={{ top: y * scale }} />
+      ))}
       {guides &&
         Array.from({ length: n }, (_, i) => (
           <div key={i}>

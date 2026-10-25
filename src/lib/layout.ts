@@ -1,4 +1,5 @@
 import type { Carousel, Family, Item, Orientation, Photo, Section, StyleOptions } from '../types';
+import { distance } from './curate';
 import { SLIDE_H as H, SLIDE_W as W, fitBox, photoOrientation, rng, sourceRect, uid } from './geometry';
 
 type Spec = Omit<Item, 'id'>;
@@ -344,6 +345,9 @@ const labDist = (a: Photo, b: Photo) => {
 function assign(t: Template, cands: Photo[]): Photo[] | null {
   // Spreads: photos laid on a backdrop should belong to it, so try the closest colors first.
   if (t.family === 'spread' && cands.length > 2) cands = [cands[0], ...cands.slice(1).sort((a, b) => labDist(a, cands[0]) - labDist(b, cands[0]))];
+  // Never two near-identical photos on the same layout (a backdrop with its look-alike on top).
+  const a0 = cands[0].analysis;
+  if (a0?.grid) cands = [cands[0], ...cands.slice(1).filter((c) => !c.analysis?.grid || distance(a0, c.analysis) > 0.3)];
   const used = new Set<number>();
   const out: Photo[] = [];
   const rec = (slot: number): boolean => {
@@ -364,8 +368,119 @@ function assign(t: Template, cands: Photo[]): Photo[] | null {
 export function buildSection(t: Template, ps: Photo[], r: () => number, o: StyleOptions): Section {
   const items = t.build(ps, r, o).map((s) => ({ ...s, id: uid('it') }));
   const sec: Section = { id: uid('sec'), template: t.id, span: t.span, photoIds: ps.map((p) => p.id), items };
+  return finishSection(sec, new Map(ps.map((p) => [p.id, p])));
+}
+
+/** Coverage, art-directed crops, overlays off subjects, subjects off cuts — in that order. */
+export function finishSection(sec: Section, byId: Map<string, Photo>): Section {
+  const ps = sec.items.map((i) => byId.get(i.photoId)!).filter(Boolean);
+  sec.items = coverSection(sec.items, byId, sec.span);
+  for (const it of sec.items) artCrop(it, byId.get(it.photoId)!, sec.span);
+  settleOverlays(sec.items, byId);
   keepFacesOffSeams(sec, ps);
   return sec;
+}
+
+const fullyCovers = (it: Spec, span: number) => it.x <= 0 && it.y <= 0 && it.x + it.w >= span * W && it.y + it.h >= H;
+
+/**
+ * Photos always cover the whole canvas: every slide gets a backdrop filling it edge to edge.
+ * One photo spans the whole section if its shape allows a reasonable crop; otherwise each slide
+ * gets its own backdrop (a portrait per slide), and everything else is laid on top.
+ */
+function coverSection<T extends Spec>(items: T[], byId: Map<string, Photo>, span: number): T[] {
+  const bridges = items.filter((i) => i.bridge);
+  const layout = items.filter((i) => !i.bridge);
+  const asBase = (it: T, x: number, w: number): T => ({ ...it, x, y: 0, w, h: H, border: 0, shadow: false, z: 0, base: true });
+  const overlay = (it: T): T => ({ ...it, base: false, z: Math.max(1, it.z) });
+  const whole = layout.find((it) => fullyCovers(it, span));
+  if (whole) return [...layout.map((it) => (it === whole ? asBase(it, 0, span * W) : overlay(it))), ...bridges];
+  if (!layout.length) return items;
+
+  // How much a photo must be cropped to fill a region of this shape (1 = perfect fit).
+  const crop = (it: T, shape: number) => {
+    const p = byId.get(it.photoId)!;
+    const a = p.width / p.height;
+    return Math.max(a / shape, shape / a);
+  };
+  const byArea = [...layout].sort((a, b) => b.w * b.h - a.w * a.h);
+  const single = [...layout].sort((a, b) => crop(a, (span * W) / H) - crop(b, (span * W) / H))[0];
+  const tiles = span > 1 && crop(single, (span * W) / H) > 1.9 && layout.length >= 2;
+  if (!tiles) {
+    // Prefer the photo that fills the section with the least cropping, then the biggest one.
+    const base = crop(single, (span * W) / H) <= 1.9 ? single : byArea[0];
+    return [...layout.map((it) => (it === base ? asBase(it, 0, span * W) : overlay(it))), ...bridges];
+  }
+  // One backdrop per slide (portrait-friendly); if photos run out, the last one widens to cover.
+  const order = [...layout].sort((a, b) => crop(a, W / H) - crop(b, W / H));
+  const bases = order.slice(0, Math.min(span, layout.length - 1 >= 1 ? Math.min(span, layout.length - 1) : 1));
+  const out: T[] = [];
+  bases.forEach((it, k) => {
+    const last = k === bases.length - 1;
+    out.push(asBase(it, k * W, last ? (span - k) * W : W));
+  });
+  for (const it of layout) if (!bases.includes(it)) out.push(overlay(it));
+  return [...out, ...bridges];
+}
+
+/**
+ * Art-directed crop: put the subject (faces, else the most detailed region) on a rule-of-thirds
+ * line of the slide it sits on, keep it whole, and zoom in a touch on small subjects — but only
+ * as far as the photo's resolution stays sharp.
+ */
+function artCrop(it: Spec, p: Photo, span: number) {
+  if (!p) return;
+  const subj = protectedBoxes(p);
+  if (!subj.length) return;
+  const sx0 = Math.min(...subj.map((b) => b.x)), sx1 = Math.max(...subj.map((b) => b.x + b.w));
+  const sy0 = Math.min(...subj.map((b) => b.y)), sy1 = Math.max(...subj.map((b) => b.y + b.h));
+  const scx = (sx0 + sx1) / 2, scy = (sy0 + sy1) / 2;
+  // Thirds of every slide the item covers, in the item's own pixels.
+  const tx: number[] = [];
+  for (let k = 0; k < span; k++) for (const f of [1 / 3, 1 / 2, 2 / 3]) {
+    const x = k * W + f * W - it.x;
+    if (x > 0 && x < it.w) tx.push(x);
+  }
+  if (!tx.length) tx.push(it.w / 3, it.w / 2, (2 * it.w) / 3);
+  const ty = [it.h / 3, it.h * 0.42, (2 * it.h) / 3];
+  const maxZoom = Math.min(1.35, Math.max(1, (p.width * Math.min(1, sourceRect(p, { ...it, crop: { ...it.crop, zoom: 1 } }).sw)) / (it.w * 0.9)));
+  let best = it.crop, bestC = Infinity;
+  for (const zoom of [1, 1.12, 1.25].filter((z) => z <= maxZoom))
+    for (let fx = 0; fx <= 1.0001; fx += 0.04)
+      for (let fy = 0; fy <= 1.0001; fy += 0.04) {
+        const { sx, sy, sw, sh } = sourceRect(p, { ...it, crop: { fx, fy, zoom } });
+        // Subject must stay whole (a little trimming is tolerated); heavily penalize cutting it.
+        const cut = Math.max(0, sx - sx0) + Math.max(0, sx1 - (sx + sw)) + Math.max(0, sy - sy0) + Math.max(0, sy1 - (sy + sh));
+        const px = ((scx - sx) / sw) * it.w, py = ((scy - sy) / sh) * it.h;
+        const dx = Math.min(...tx.map((t) => Math.abs(px - t))) / it.w;
+        const dy = Math.min(...ty.map((t) => Math.abs(py - t))) / it.h;
+        const subjArea = ((sx1 - sx0) * (sy1 - sy0)) / (sw * sh);
+        // Zoom only pays off when the subject is small in the frame.
+        const zoomCost = zoom > 1 ? (subjArea > 0.12 ? 0.4 : 0.05) * (zoom - 1) * 4 : 0;
+        const c = cut * 8 + dx + dy * 0.6 + zoomCost + Math.abs(fx - it.crop.fx) * 0.05 + Math.abs(fy - it.crop.fy) * 0.05;
+        if (c < bestC) [best, bestC] = [{ fx, fy, zoom }, c];
+      }
+  it.crop = best;
+}
+
+/** Nudges photos laid on top off whatever they'd hide underneath (faces, the subject). */
+function settleOverlays(items: Spec[], byId: Map<string, Photo>) {
+  const bases = items.filter((i) => i.base);
+  for (const it of items) {
+    if (it.base || it.bridge) continue;
+    const cost = (x: number, y: number) =>
+      bases.reduce((c, b) => c + coverCost({ x0: x, x1: x + it.w, y0: y, y1: y + it.h }, b, byId.get(b.photoId)!), 0) +
+      (Math.abs(x - it.x) + Math.abs(y - it.y)) * 30;
+    let best = { x: it.x, y: it.y }, bestC = cost(it.x, it.y);
+    for (const dx of [-0.2, -0.1, 0, 0.1, 0.2].map((f) => f * W))
+      for (const dy of [-0.15, -0.08, 0, 0.08, 0.15].map((f) => f * H)) {
+        const x = it.x + dx, y = Math.max(40, Math.min(H - it.h - 40, it.y + dy));
+        const c = cost(x, y);
+        if (c < bestC) [best, bestC] = [{ x, y }, c];
+      }
+    it.x = Math.round(best.x);
+    it.y = Math.round(best.y);
+  }
 }
 
 /**
@@ -493,6 +608,12 @@ export function rebuildSection(sec: Section, t: Template, ps: Photo[], o: StyleO
   const built = buildSection(t, ordered, rng(seed), o);
   // Photos bridging into the next slide belong to the seam, not the layout, so they survive a re-roll.
   return { ...built, id: sec.id, items: [...built.items, ...(sec.items?.filter((i) => i.bridge) ?? [])] };
+}
+
+/** After removing a photo: make sure the section is still covered edge to edge. */
+export function recoverSection(sec: Section, byId: Map<string, Photo>): Section {
+  const items = coverSection(sec.items, byId, sec.span);
+  return { ...sec, items };
 }
 
 /**

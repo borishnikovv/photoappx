@@ -5,7 +5,6 @@ import { templateById } from '../lib/layout';
 import { SLIDE_H, SLIDE_W, slideCount } from '../lib/geometry';
 import type { Family } from '../types';
 
-const BGS = ['auto', '#ffffff', '#f4f1ea', '#e9e4da', '#1a1a1a', '#0d0d0d'];
 const FRAMES = ['#f4f1ea', '#ffffff', '#0d0d0d'];
 const FAMILIES: { id: Family; label: string }[] = [
   { id: 'spread', label: 'Spreads' },
@@ -130,19 +129,6 @@ export function ComposeView() {
           </button>
         ))}
         <div className="sep" />
-        <div className="field">
-          <span className="mono faint">Bg</span>
-          {BGS.map((b) => (
-            <button
-              key={b}
-              className={`swatch ${b === 'auto' ? 'auto' : ''}`}
-              title={b === 'auto' ? 'Auto: a tint drawn from your photos' : b}
-              style={{ background: b === 'auto' ? c.ground : b }}
-              aria-pressed={style.bg === b}
-              onClick={() => setStyle({ bg: b })}
-            />
-          ))}
-        </div>
         <div className="seg" title="How photos laid on top of others look">
           <button aria-pressed={style.overlay === 'clean'} onClick={() => setStyle({ overlay: 'clean' })}>
             Clean
@@ -220,14 +206,18 @@ export function ComposeView() {
       <div className="dock">
         {sel ? (
           <>
-            <div className="seg">
-              <button aria-pressed={mode === 'frame'} onClick={() => setMode('frame')}>
-                Move frame
-              </button>
-              <button aria-pressed={mode === 'photo'} onClick={() => setMode('photo')}>
-                Pan photo
-              </button>
-            </div>
+            {sel.it.base ? (
+              <span className="mono faint">Backdrop · drag to pan</span>
+            ) : (
+              <div className="seg">
+                <button aria-pressed={mode === 'frame'} onClick={() => setMode('frame')}>
+                  Move
+                </button>
+                <button aria-pressed={mode === 'photo'} onClick={() => setMode('photo')}>
+                  Pan
+                </button>
+              </div>
+            )}
             <div className="field">
               <span className="mono faint">Zoom</span>
               <input
@@ -239,24 +229,26 @@ export function ComposeView() {
                 onChange={(e) => updateItem(sel.sec.id, sel.it.id, { crop: { ...sel.it.crop, zoom: +e.target.value } })}
               />
             </div>
-            <button
-              className="chip"
-              aria-pressed={sel.it.border > 0}
-              onClick={() => updateItem(sel.sec.id, sel.it.id, { border: sel.it.border ? 0 : 12 })}
-            >
-              <span className="dot" /> Border
-            </button>
-            <button className="chip" aria-pressed={sel.it.shadow} onClick={() => updateItem(sel.sec.id, sel.it.id, { shadow: !sel.it.shadow })}>
-              <span className="dot" /> Shadow
-            </button>
-            <button
-              className="btn sm ghost"
-              onClick={() =>
-                updateItem(sel.sec.id, sel.it.id, { z: Math.max(...sel.sec.items.map((x) => x.z)) + 1 })
-              }
-            >
-              Bring forward
-            </button>
+            {!sel.it.base && (
+              <>
+                <button
+                  className="chip"
+                  aria-pressed={sel.it.border > 0}
+                  onClick={() => updateItem(sel.sec.id, sel.it.id, { border: sel.it.border ? 0 : 12 })}
+                >
+                  <span className="dot" /> Border
+                </button>
+                <button className="chip" aria-pressed={sel.it.shadow} onClick={() => updateItem(sel.sec.id, sel.it.id, { shadow: !sel.it.shadow })}>
+                  <span className="dot" /> Shadow
+                </button>
+                <button className="btn sm ghost" onClick={() => s.restack(sel.sec.id, sel.it.id, 'front')}>
+                  Forward
+                </button>
+                <button className="btn sm ghost" onClick={() => s.restack(sel.sec.id, sel.it.id, 'back')}>
+                  Back
+                </button>
+              </>
+            )}
             <button className="btn sm ghost" onClick={() => s.removeItem(sel.sec.id, sel.it.id)}>
               Remove
             </button>

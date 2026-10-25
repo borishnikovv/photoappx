@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Carousel, Decision, Item, Photo, Section, StyleOptions } from './types';
-import { VARIANTS, addBridges, fixSlivers, groundFor, compatibleTemplates, generateCarousel, rebuildSection, templateById } from './lib/layout';
+import { VARIANTS, addBridges, fixSlivers, groundFor, recoverSection, compatibleTemplates, generateCarousel, rebuildSection, templateById } from './lib/layout';
 import { analyzeAll, buildDecisions, curate, distance, sameSceneFor, groupDuplicates, tiltVerdict, type Progress, type Sequence } from './lib/curate';
 import { fitBox, photoOrientation } from './lib/geometry';
 import { level, straighten, unstraighten } from './lib/straighten';
@@ -43,6 +43,8 @@ interface State {
   shuffleSection: (sectionId: string) => void;
   removeSection: (sectionId: string) => void;
   removeItem: (sectionId: string, itemId: string) => void;
+  /** Forward: above everything it overlaps. Back: beneath the other photos on top, never under the backdrop. */
+  restack: (sectionId: string, itemId: string, to: 'front' | 'back') => void;
   swapPhoto: (sectionId: string, itemId: string, photoId: string) => void;
   appendPhoto: (photoId: string) => void;
   reset: () => void;
@@ -236,12 +238,40 @@ export const useStore = create<State>((set, get) => {
       set({ selected: null });
     },
     removeItem: (sectionId, itemId) => {
+      const { byId } = get();
       editSection(sectionId, (sec) => {
         const items = sec.items.filter((i) => i.id !== itemId);
-        return { ...sec, items, photoIds: items.filter((i) => !i.bridge).map((i) => i.photoId) };
+        // Removing a backdrop promotes another photo, so the slides never show empty canvas.
+        return recoverSection({ ...sec, items, photoIds: items.filter((i) => !i.bridge).map((i) => i.photoId) }, byId);
       });
       set({ selected: null });
     },
+    restack: (sectionId, itemId, to) =>
+      editActive((c) => {
+        // Compare in canvas coordinates: overlapping photos may belong to neighbouring sections.
+        let start = 0;
+        const all = c.sections.flatMap((sec) => {
+          const o = start * 1080;
+          start += sec.span;
+          return sec.items.map((it) => ({ it, sec, x: o + it.x }));
+        });
+        const me = all.find((a) => a.it.id === itemId);
+        if (!me || me.it.base) return c;
+        const others = all.filter(
+          (a) => a !== me && !a.it.base && a.x < me.x + me.it.w && a.x + a.it.w > me.x && a.it.y < me.it.y + me.it.h && a.it.y + a.it.h > me.it.y,
+        );
+        const z = !others.length
+          ? me.it.z
+          : to === 'front'
+            ? Math.max(...others.map((a) => a.it.z)) + 1
+            : Math.max(0.5, Math.min(...others.map((a) => a.it.z)) - 1);
+        return {
+          ...c,
+          sections: c.sections.map((sec) =>
+            sec.id !== sectionId ? sec : { ...sec, items: sec.items.map((it) => (it.id === itemId ? { ...it, z } : it)) },
+          ),
+        };
+      }),
     removeSection: (id) => {
       editActive((c) => ({ ...c, sections: c.sections.filter((s) => s.id !== id) }));
       set({ selected: null });

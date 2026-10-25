@@ -255,6 +255,9 @@ export function distance(a: Analysis, b: Analysis) {
   return 0.45 * look + 0.55 * (1 - cosine(a.embedding, b.embedding)) * 3;
 }
 
+/** Most photos of one scene a carousel may hold; beyond that it reads as repetition. */
+const MAX_PER_SCENE = 3;
+
 /** Photos closer than this are the same scene seen almost the same way: never picked together. */
 const SAME_SCENE = 0.36;
 
@@ -317,7 +320,14 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
   const radius = Math.max(sameScene, quantile(D.map((row) => Math.min(...row)), 0.5));
   const floor = quantile(cands.map((_, i) => score(i)), 0.25);
   const chosen: number[] = [];
-  const distinct = (i: number, r = radius) => chosen.every((c) => D[i][c] > r);
+  // At most 3 photos of any one scene in the whole carousel: count look-alikes wherever they are.
+  // "Look-alike" is relative to the album: only its very closest pairs count, so a uniform album
+  // (one place, one light) isn't mistaken for one big scene.
+  const pairs: number[] = [];
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) pairs.push(D[i][j]);
+  const alikeAt = Math.min(sameScene * 1.6, quantile(pairs, 0.04));
+  const alike = (i: number) => chosen.filter((c) => D[i][c] < alikeAt).length;
+  const distinct = (i: number, r = radius) => alike(i) < MAX_PER_SCENE && chosen.every((c) => D[i][c] > r);
   const byScore = (xs: number[]) => [...xs].sort((a, b) => score(b) - score(a));
   // Keep horizontals and verticals in healthy balance (spreads need both: wide backdrops, tall
   // frames on top) by nudging toward whichever is under-represented so far.
@@ -330,6 +340,17 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
 
   const ms = moments(cands, D).map(byScore);
   const reps = ms.map((m) => m[0]);
+  const momentOf = new Map(ms.flatMap((m, mi) => m.map((i) => [i, mi] as const)));
+  const taken = (i: number) => chosen.filter((c) => momentOf.get(c) === momentOf.get(i)).length;
+  // A moment is one scene only if its photos are close to each other compared with the album;
+  // those get the 3-photo cap. A "moment" that's really a run of different scenes doesn't.
+  const sceneLike = quantile(pairs, 0.3);
+  const capOf = ms.map((m) => {
+    const inner: number[] = [];
+    for (let a = 0; a < m.length; a++) for (let b = a + 1; b < m.length; b++) inner.push(D[m[a]][m[b]]);
+    return inner.length && quantile(inner, 0.5) < sceneLike ? MAX_PER_SCENE : Infinity;
+  });
+  const room = (i: number) => taken(i) < capOf[momentOf.get(i)!];
   if (reps.length >= k) {
     // More moments than slots: the best moment from each even stretch of the album.
     for (let s = 0; s < k; s++) {
@@ -343,12 +364,12 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
     // Seconds, thirds…: bigger moments first within each round, only frames that add something new.
     const order = ms.map((_, i) => i).sort((a, b) => ms[b].length - ms[a].length);
     // No moment gets far more than its fair share while others still have something to give.
-    const cap = Math.ceil(k / ms.length) + 1;
-    for (let round = 1; chosen.length < k && round < cap; round++) {
+    const share = Math.ceil(k / ms.length) + 1;
+    for (let round = 1; chosen.length < k && round < share; round++) {
       let added = 0;
       for (const mi of order) {
         if (chosen.length >= k) break;
-        const next = best(ms[mi].filter((i) => !chosen.includes(i) && score(i) >= floor && distinct(i)));
+        const next = best(ms[mi].filter((i) => !chosen.includes(i) && score(i) >= floor && room(i) && distinct(i)));
         if (next != null) {
           chosen.push(next);
           added++;
@@ -359,8 +380,6 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
   }
   // Still short (a small or very repetitive album): relax "different enough" step by step, but never
   // into near-repeats — fewer photos beats the same scene twice. Least-represented moments first.
-  const momentOf = new Map(ms.flatMap((m, mi) => m.map((i) => [i, mi] as const)));
-  const taken = (i: number) => chosen.filter((c) => momentOf.get(c) === momentOf.get(i)).length;
   const radii: number[] = [];
   for (let r = radius * 0.8; r > sameScene; r *= 0.8) radii.push(r);
   radii.push(sameScene);
@@ -369,31 +388,110 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
     const order = cands.map((_, i) => i).sort((a, b) => taken(a) - taken(b) || score(b) + balance(b) - score(a) - balance(a));
     for (const i of order) {
       if (chosen.length >= k) break;
-      if (!chosen.includes(i) && distinct(i, r)) chosen.push(i);
+      if (!chosen.includes(i) && room(i) && distinct(i, r)) chosen.push(i);
     }
   }
-  return sequence(chosen.map((i) => cands[i]), seq).map((p) => p.id);
+  const sceneOf = new Map(chosen.filter((i) => capOf[momentOf.get(i)!] !== Infinity).map((i) => [cands[i], momentOf.get(i)!] as const));
+  return sequence(chosen.map((i) => cands[i]), seq, sceneOf).map((p) => p.id);
 }
 
-export function sequence(chosen: Photo[], seq: Sequence): Photo[] {
+/** How close the camera is: 0 = wide, scene-setting view … 1 = close-up of a face or detail. */
+function closeness(p: Photo) {
+  const a = p.analysis;
+  const faceArea = (a?.faces ?? []).reduce((s2, f) => s2 + f.w * f.h, 0);
+  const d = a?.detail ?? [];
+  // Wide views spread detail across the frame; close-ups concentrate it (and fill it with faces).
+  const mean = d.length ? d.reduce((x, y) => x + y, 0) / d.length : 0.3;
+  const peak = d.length ? Math.max(...d) : 0.3;
+  const concentration = peak > 0 ? 1 - mean / peak : 0.5;
+  const wide = ['landscape', 'pano'].includes(photoOrientation(p)) ? -0.15 : 0.1;
+  return Math.max(0, Math.min(1, 0.45 * concentration + Math.min(1, faceArea * 6) * 0.5 + wide + 0.1));
+}
+
+/** Calm, quiet frames (little detail, soft light) make good endings. */
+const calmness = (p: Photo) => 1 - (p.analysis?.detail?.reduce((x, y) => x + y, 0) ?? 32) / 64;
+
+/**
+ * Orders the picks as a story rather than a ranking: open on an establishing wide shot, move
+ * through the day in time order, alternate wide views with close moments and details so it
+ * breathes, never put two photos of the same scene side by side, and close on a calm frame.
+ */
+export function sequence(chosen: Photo[], seq: Sequence, sceneOf?: Map<Photo, number>): Photo[] {
   if (chosen.length < 3) return chosen;
-  // Hero: a strong opener, wide frames slightly favoured since they can span slides.
-  const heroScore = (p: Photo) => (p.analysis?.score ?? 0) + (['landscape', 'pano'].includes(photoOrientation(p)) ? 6 : 0);
-  const hero = chosen.reduce((a, b) => (heroScore(b) > heroScore(a) ? b : a));
-  const rest = chosen.filter((p) => p !== hero);
-  if (seq === 'story') return [hero, ...rest.sort((a, b) => a.date - b.date)];
-  // Color flow: walk to the nearest mean color each step, so tones blend slide to slide.
-  const out = [hero];
-  while (rest.length) {
-    const cur = out[out.length - 1].analysis?.lab ?? [50, 0, 0];
-    let bi = 0, bd = Infinity;
-    rest.forEach((p, i) => {
-      const l = p.analysis?.lab ?? [50, 0, 0];
-      const d = (l[0] - cur[0]) ** 2 * 0.5 + (l[1] - cur[1]) ** 2 + (l[2] - cur[2]) ** 2;
-      if (d < bd) [bi, bd] = [i, d];
-    });
-    out.push(rest.splice(bi, 1)[0]);
+  const score = (p: Photo) => p.analysis?.score ?? 0;
+  const top = Math.max(...chosen.map(score));
+  // Opener: strong and scene-setting (wide, not a close-up).
+  const openerV = (p: Photo) => score(p) - top * 0.25 * closeness(p) + (['landscape', 'pano'].includes(photoOrientation(p)) ? 6 : 0);
+  const opener = chosen.reduce((a, b) => (openerV(b) > openerV(a) ? b : a));
+  let rest = chosen.filter((p) => p !== opener);
+  // Closer: calm and good, late in the day.
+  const t0 = Math.min(...rest.map((p) => p.date)), t1 = Math.max(...rest.map((p) => p.date));
+  const closerV = (p: Photo) => score(p) * 0.5 + calmness(p) * 30 + ((p.date - t0) / Math.max(1, t1 - t0)) * 15;
+  const closer = rest.length > 3 ? rest.reduce((a, b) => (closerV(b) > closerV(a) ? b : a)) : null;
+  if (closer) rest = rest.filter((p) => p !== closer);
+
+  let middle: Photo[];
+  if (seq === 'story') middle = [...rest].sort((a, b) => a.date - b.date);
+  else {
+    // Color flow: walk to the nearest mean color each step, so tones blend slide to slide.
+    middle = [];
+    const pool = [...rest];
+    let cur = opener.analysis?.lab ?? [50, 0, 0];
+    while (pool.length) {
+      let bi = 0, bd = Infinity;
+      pool.forEach((p, i) => {
+        const l = p.analysis?.lab ?? [50, 0, 0];
+        const d = (l[0] - cur[0]) ** 2 * 0.5 + (l[1] - cur[1]) ** 2 + (l[2] - cur[2]) ** 2;
+        if (d < bd) [bi, bd] = [i, d];
+      });
+      const next = pool.splice(bi, 1)[0];
+      middle.push(next);
+      cur = next.analysis?.lab ?? cur;
+    }
   }
+
+  const out = [opener, ...middle, ...(closer ? [closer] : [])];
+  // Rhythm pass: fix look-alikes side by side and runs of the same shot scale with small,
+  // local swaps, so the time order (the story) stays intact.
+  const analyses = chosen.map((p) => p.analysis!).filter((a) => a?.grid);
+  const similar = analyses.length > 2 ? sameSceneFor(analyses) * 1.6 : 0;
+  // Same scene: the same moment of the album, or simply look-alikes.
+  const sim = (a: Photo, b: Photo) =>
+    (sceneOf?.has(a) && sceneOf.get(a) === sceneOf.get(b)) ||
+    (!!a?.analysis?.grid && !!b?.analysis?.grid && distance(a.analysis!, b.analysis!) < similar);
+  const scaleOf = (p: Photo) => (closeness(p) > 0.55 ? 'close' : closeness(p) < 0.35 ? 'wide' : 'mid');
+  const bad = (i: number) =>
+    (i > 0 && sim(out[i - 1], out[i])) ? 2 : i > 1 && scaleOf(out[i]) === scaleOf(out[i - 1]) && scaleOf(out[i]) === scaleOf(out[i - 2]) ? 1 : 0;
+  // One pass, neighbours only: a look-alike next to its twin swaps with the following photo (or the
+  // one after); a third same-scale shot in a row does too, but only if that adds no new problem.
+  // Photos may trade places to break up look-alikes, but none strays more than 3 places from its
+  // moment in the story; the opening and closing shots stay put.
+  const home = new Map(out.map((p, i) => [p, i]));
+  const fixed = new Set<Photo>([opener, ...(closer ? [closer] : [])]);
+  const canSit = (p: Photo, at: number) => !fixed.has(p) && Math.abs(home.get(p)! - at) <= 3;
+  const around = (ks: number[]) => [...new Set(ks.flatMap((k) => [k, k + 1]))].filter((k) => k > 0 && k < out.length).reduce((t, k) => t + bad(k), 0);
+  const tryMove = (k: number) => {
+    if (k <= 0) return false;
+    for (const j of [k + 1, k + 2, k - 1, k - 2, k - 3]) {
+      if (j <= 0 || j >= out.length || !canSit(out[k], j) || !canSit(out[j], k)) continue;
+      const before = around([k, j]);
+      [out[k], out[j]] = [out[j], out[k]];
+      if (around([k, j]) < before) return true;
+      [out[k], out[j]] = [out[j], out[k]];
+    }
+    return false;
+  };
+  for (let pass = 0; pass < 3; pass++) for (let i = 1; i < out.length; i++) if (bad(i)) tryMove(i) || tryMove(i - 1);
+  // The ending matters most: if the closing shot still follows its own scene, reach a little
+  // further back for the photo before it.
+  const n = out.length;
+  if (n > 4 && bad(n - 1) === 2)
+    for (let j = n - 3; j >= Math.max(1, n - 6); j--) {
+      const before = around([j, n - 2]);
+      [out[j], out[n - 2]] = [out[n - 2], out[j]];
+      if (around([j, n - 2]) < before) break;
+      [out[j], out[n - 2]] = [out[n - 2], out[j]];
+    }
   return out;
 }
 
