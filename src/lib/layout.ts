@@ -537,7 +537,8 @@ function makeMosaics(): Template[] {
           label: `Mosaic · ${g.label}`,
           family: 'mosaic',
           span,
-          slots: [ANY, ANY, ...g.slots],
+          // A backdrop running over two slides is a wide photo, never a stretched vertical.
+          slots: [span - join >= 2 ? ANY : join >= 2 ? WIDE : ANY, span - join >= 2 ? WIDE : ANY, ...g.slots],
           weight: g.id === 'grid' ? 0.8 : 1.1,
           hero: span === 3,
           rigid: true,
@@ -682,6 +683,7 @@ export function alignOverlays(items: Spec[], byId: Map<string, Photo>, span: num
         c += seamCut(it, x, byId.get(it.photoId));
         // Shared lines are the point: reward each one, lightly prefer staying near the layout's intent.
         c -= lines(x, y) * 0.12;
+        c += composition(x, y, it, placed, span);
         c += (Math.abs(x - it.x) / W + Math.abs(y - it.y) / H) * 0.15;
         if (c < bestC) [best, bestC] = [{ x, y }, c];
       }
@@ -691,14 +693,47 @@ export function alignOverlays(items: Spec[], byId: Map<string, Photo>, span: num
   }
 }
 
+/**
+ * An art director's eye on one print's position, beyond hiding nothing and lining up:
+ *  - no edge hugging a slide cut without crossing it (reads as a mistake on the next slide);
+ *  - prints spread across a spread's slides, not bunched on one while another stays bare;
+ *  - between neighbouring prints, either exact alignment or a clear high/low step — never a
+ *    near-miss that looks accidental.
+ */
+function composition(x: number, y: number, it: { w: number; h: number }, placed: Spec[], span: number) {
+  let c = 0;
+  for (let s2 = W; s2 < span * W; s2 += W) {
+    const r = x + it.w;
+    if ((r > s2 - 70 && r <= s2 - 1) || (x >= s2 + 1 && x < s2 + 70)) c += 0.5;
+  }
+  if (span > 1 && placed.length) {
+    const slideOf = (q: { x: number; w: number }) => Math.max(0, Math.min(span - 1, Math.floor((q.x + q.w / 2) / W)));
+    const counts = new Array(span).fill(0);
+    for (const q of placed) counts[slideOf(q)]++;
+    const mine = slideOf({ x, w: it.w });
+    if (counts[mine] >= 1 && counts.some((n) => n === 0)) c += 0.35 * counts[mine];
+  }
+  const cy = y + it.h / 2;
+  for (const q of placed) {
+    if (x < q.x + q.w && x + it.w > q.x) continue; // same column: handled by stacking lines
+    const d = Math.abs(cy - (q.y + q.h / 2));
+    const aligned = [q.y - y, q.y + q.h - y - it.h, q.y + q.h / 2 - cy].some((v) => Math.abs(v) < 2);
+    if (!aligned && d < H * 0.18) c += 0.3;
+  }
+  return c;
+}
+
 /** Candidate positions for a photo on top, and how many lines a position shares with others. */
 function anchors(it: { w: number; h: number }, span: number, others: Spec[]) {
   const xs: number[] = [], ys: number[] = [];
   for (let k = 0; k < span; k++) {
     if (it.w <= W - 2 * M) xs.push(k * W + M, k * W + (W - it.w) / 2, k * W + W - it.w - M);
+    // Centered on the slide's thirds.
+    for (const f of [1 / 3, 2 / 3]) if (it.w <= W * 0.62) xs.push(k * W + W * f - it.w / 2);
     if (k > 0) for (const f of [1 / 3, 1 / 2, 2 / 3]) xs.push(k * W - it.w * f);
   }
   ys.push(M, (H - it.h) / 2, H - it.h - M);
+  for (const f of [1 / 3, 2 / 3]) ys.push(H * f - it.h / 2);
   for (const q of others) {
     xs.push(q.x, q.x + q.w - it.w, q.x + q.w / 2 - it.w / 2, q.x + q.w + OGAP, q.x - it.w - OGAP);
     ys.push(q.y, q.y + q.h - it.h, q.y + q.h / 2 - it.h / 2, q.y + q.h + OGAP, q.y - it.h - OGAP);
@@ -1088,14 +1123,22 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
   const recentFamilies: string[] = [];
   const allowed = TEMPLATES.filter((t) => t.family === 'base' || o.families[t.family]);
 
+  // Backdrops: half the slides on single-slide backdrops, half on 16:9 photos spread across 2–3.
+  let spreadSlides = 0;
   while (queue.length && slides < o.maxSlides) {
     const left = o.maxSlides - slides;
+    // Half of the slides this carousel will actually have (fewer photos → fewer slides).
+    const expected = Math.min(o.maxSlides, slides + Math.ceil(queue.length / 1.7));
+    const spreadDue = Math.round(expected * 0.5) - spreadSlides;
+    const lastSpread = sections.length ? spreadSpan(sections[sections.length - 1]) > 0 : false;
     // Photos per slide we need from here on to fit everything in.
     const density = queue.length / left;
     let best: { sec: Section; t: Template; ps: Photo[]; v: number } | null = null;
     for (const t of allowed) {
       if (t.span > left) continue;
-      const ps = assign(t, queue.slice(0, t.slots.length >= 5 ? 9 : t.family === 'spread' ? 7 : 6));
+      const spreadT = spreadBackdrop(t);
+      // A wide backdrop may come from a little further ahead in the story when spreads are due.
+      const ps = assign(t, queue.slice(0, spreadT && spreadDue > 0 ? 12 : t.slots.length >= 5 ? 9 : t.family === 'spread' ? 7 : 6));
       if (!ps) continue;
       let w = t.weight * (emph.boost[t.family] ?? 1) * layoutBias(t.id, t.family);
       if (recent[0] === t.id) w *= 0.1;
@@ -1116,6 +1159,14 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
       if (kind === 'wide' && count('wide') < 2 && sections.length >= 1) w *= 3;
       if (kind === 'stack' && count('stack') < 2 && sections.length >= 1) w *= 2.5;
       if (kinds.slice(-2).includes(kind)) w *= 0.6;
+      // The 50/50 backdrop plan, alternating: a spread, then a slide or two on their own, then a spread.
+      // (Added straight to the value below, so a nicer score can't talk it out of the plan.)
+      const planFor = (sec: Section) => {
+        const sp = spreadSpan(sec);
+        if (sp) return spreadDue >= sp ? (lastSpread ? 0.4 : 1.5) : -2.5;
+        if (spreadDue > 0 && left - spreadDue < 2) return -2; // only spreads can still meet the plan
+        return lastSpread ? 0.4 : 0;
+      };
       // Signature patterns: strongly wanted once, welcome a second time in a long carousel.
       if (t.signature) {
         const seen = sections.filter((x) => x.template === t.id).length;
@@ -1127,7 +1178,7 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
       w *= Math.exp(-0.9 * Math.abs(perSlide - density));
       for (let k = 0; k < (t.family === 'mosaic' ? 1 : 2); k++) {
         const sec = buildSection(t, ps, rng(Math.floor(r() * 1e9)), o);
-        const v = scoreSection(sec, byId).score * 3 + Math.log(w) * 0.6 + r() * 0.25;
+        const v = scoreSection(sec, byId).score * 3 + Math.log(w) * 0.6 + planFor(sec) + r() * 0.25;
         if (!best || v > best.v) best = { sec, t, ps, v };
       }
     }
@@ -1137,6 +1188,7 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
       best = { sec: buildSection(t, [queue[0]], r, o), t, ps: [queue[0]], v: 0 };
     }
     sections.push(best.sec);
+    spreadSlides += spreadSpan(best.sec);
     for (const p of best.ps) queue.splice(queue.indexOf(p), 1);
     slides += best.t.span;
     recent.unshift(best.t.id);
@@ -1145,6 +1197,16 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
     recentFamilies.length = Math.min(recentFamilies.length, 2);
   }
   return { id: uid('car'), name: emph.name, seed, sections };
+}
+
+/** Slides covered by backdrops that run across more than one slide. */
+export function spreadSpan(sec: Section) {
+  return sec.items.filter((i) => i.base && i.w >= 2 * W - 2).reduce((n, i) => n + Math.round(i.w / W), 0);
+}
+
+/** One wide photo as the backdrop across all of a multi-slide layout. */
+export function spreadBackdrop(t: Template) {
+  return t.span >= 2 && t.slots[0].every((o) => o === 'landscape' || o === 'pano') && !t.id.startsWith('mosaic') && t.id !== 'column4-split';
 }
 
 /** The kind of page a layout makes, for the carousel's rhythm. */

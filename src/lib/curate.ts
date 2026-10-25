@@ -413,6 +413,23 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
       if (!chosen.includes(i) && room(i) && distinct(i, r)) chosen.push(i);
     }
   }
+  // Wide spreads need wide photos: about half the carousel runs on 16:9 backdrops across 2–3
+  // slides, so keep enough landscapes (when the album has them), trading out the weakest verticals.
+  const minWide = Math.min(Math.round(k * 0.3), 8);
+  const tall = (i: number) => !wide(i);
+  for (let guard = 0; chosen.filter(wide).length < minWide && guard < 20; guard++) {
+    const add = byScore(cands.map((_, i) => i).filter((i) => wide(i) && !chosen.includes(i) && room(i) && distinct(i, sameScene) && score(i) >= floor * 0.85))[0];
+    if (add == null) break;
+    if (chosen.length >= k) {
+      // Drop the weakest vertical from a moment that still keeps another photo.
+      const out = chosen
+        .filter((i) => tall(i) && chosen.some((c) => c !== i && momentOf.get(c) === momentOf.get(i)))
+        .sort((a, b) => score(a) - score(b))[0];
+      if (out == null) break;
+      chosen.splice(chosen.indexOf(out), 1);
+    }
+    chosen.push(add);
+  }
   const sceneOf = new Map(chosen.filter((i) => capOf[momentOf.get(i)!] !== Infinity).map((i) => [cands[i], momentOf.get(i)!] as const));
   return sequence(chosen.map((i) => cands[i]), seq, sceneOf).map((p) => p.id);
 }
