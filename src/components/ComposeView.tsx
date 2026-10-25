@@ -77,7 +77,7 @@ function Preview({ onClose }: { onClose: () => void }) {
 
 export function ComposeView() {
   const s = useStore();
-  const { carousels, active, setActive, byId, style, setStyle, compose, selected, select, updateItem, picks, photos } = s;
+  const { carousels, active, setActive, byId, style, setStyle, selected, select, updateItem, picks, photos } = s;
   const c = carousels[active];
   const { ref, scale: fit } = useStageScale();
   const [zoom, setZoom] = useState(() => (innerWidth < 860 ? 1 : 0.7));
@@ -118,8 +118,8 @@ export function ComposeView() {
             </button>
           ))}
         </div>
-        <button className="btn sm" onClick={() => compose(true)} title="New layouts with the same photos">
-          Regenerate
+        <button className="btn sm" disabled={s.arranging} onClick={() => s.arrange(true)} title="New layouts with the same photos">
+          {s.arranging ? 'Arranging…' : 'Regenerate'}
         </button>
         <div className="sep" />
         {FAMILIES.map((f) => (

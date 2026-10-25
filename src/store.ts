@@ -36,6 +36,9 @@ interface State {
   setSeq: (s: Sequence) => void;
   setStyle: (s: Partial<StyleOptions>) => void;
   compose: (reseed?: boolean) => void;
+  /** Same as compose, but lets the UI show "Arranging…" first (laying out takes a moment). */
+  arrange: (reseed?: boolean) => void;
+  arranging: boolean;
   setActive: (i: number) => void;
   select: (s: State['selected']) => void;
   updateItem: (sectionId: string, itemId: string, patch: Partial<Item>) => void;
@@ -50,6 +53,9 @@ interface State {
   reset: () => void;
   setAskOpen: (open: boolean) => void;
   resolve: (id: string, choice: string | boolean) => Promise<void>;
+  /** Answered questions, newest first, with what each changed, so "Back" can undo them. */
+  answered: { decision: Decision; picks: string[]; groupBest: [string, boolean | undefined][]; photo?: Photo }[];
+  undoAnswer: () => void;
   /** on/off uses the detected tilt; a number sets the correction by hand (0 = as shot). */
   /** on/off uses what was detected; { tilt, keystone } sets the correction by hand (0, 0 = as shot). */
   setStraight: (photoId: string, on: boolean | { tilt: number; keystone: number }) => Promise<void>;
@@ -112,6 +118,8 @@ export const useStore = create<State>((set, get) => {
     selected: null,
     decisions: [],
     askOpen: false,
+    arranging: false,
+    answered: [],
 
     setStep: (step) => set({ step }),
     addPhotos: (ps) =>
@@ -155,8 +163,16 @@ export const useStore = create<State>((set, get) => {
     setAskOpen: (askOpen) => set({ askOpen }),
     resolve: async (id, choice) => {
       const d = get().decisions.find((x) => x.id === id);
-      set((s) => ({ decisions: s.decisions.filter((x) => x.id !== id) }));
       if (!d) return;
+      // Remember exactly what this answer changes, so it can be taken back.
+      const { picks, photos, byId } = get();
+      const snapshot = {
+        decision: d,
+        picks: [...picks],
+        groupBest: d.kind === 'pick' ? photos.filter((p) => p.analysis?.groupId === d.groupId).map((p) => [p.id, p.analysis!.groupBest] as [string, boolean | undefined]) : [],
+        photo: d.kind === 'straighten' ? byId.get(d.photoId) : undefined,
+      };
+      set((s) => ({ decisions: s.decisions.filter((x) => x.id !== id), answered: [snapshot, ...s.answered] }));
       if (d.kind === 'pick' && typeof choice === 'string') {
         // Swap the chosen frame into the picks where the group's current pick sits.
         for (const p of get().photos) if (p.analysis?.groupId === d.groupId) p.analysis.groupBest = p.id === choice;
@@ -169,6 +185,22 @@ export const useStore = create<State>((set, get) => {
         });
       }
       if (d.kind === 'straighten' && choice === true) await get().setStraight(d.photoId, true);
+    },
+    undoAnswer: () => {
+      const [last, ...rest] = get().answered;
+      if (!last) return;
+      for (const [id, best] of last.groupBest) {
+        const a = get().byId.get(id)?.analysis;
+        if (a) a.groupBest = best;
+      }
+      if (last.photo) {
+        const prev = last.photo;
+        set((s) => {
+          const photos = s.photos.map((p) => (p.id === prev.id ? prev : p));
+          return { photos, byId: new Map(photos.map((p) => [p.id, p])) };
+        });
+      }
+      set((s) => ({ picks: last.picks, answered: rest, decisions: [last.decision, ...s.decisions], photos: [...s.photos] }));
     },
     setStraight: async (photoId, on) => {
       const p = get().byId.get(photoId);
@@ -215,6 +247,13 @@ export const useStore = create<State>((set, get) => {
         selected: null,
         step: 'compose',
       });
+    },
+    arrange: (reseed) => {
+      set({ arranging: true });
+      setTimeout(() => {
+        get().compose(reseed);
+        set({ arranging: false });
+      }, 30);
     },
     setActive: (active) => set({ active, selected: null }),
     select: (selected) => set({ selected }),
@@ -314,7 +353,7 @@ export const useStore = create<State>((set, get) => {
       const t = templateById(o === 'pano' ? 'pano2' : o === 'landscape' ? (style.families.pano ? 'pano2' : 'framed') : 'full');
       editActive((c) => ({ ...c, sections: [...c.sections, rebuildSection({ id: `sec_${photoId}_${Date.now()}` } as Section, t, [p], style, Date.now())] }));
     },
-    reset: () => set({ step: 'import', photos: [], byId: new Map(), picks: [], carousels: [], selected: null, smartMode: null, decisions: [], askOpen: false }),
+    reset: () => set({ step: 'import', photos: [], byId: new Map(), picks: [], carousels: [], selected: null, smartMode: null, decisions: [], askOpen: false, answered: [] }),
   };
 });
 

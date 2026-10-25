@@ -138,7 +138,7 @@ function Detail({ p, picked }: { p: Photo; picked: boolean }) {
 }
 
 export function CurateView() {
-  const { photos, picks, analyzing, smartMode, count, setCount, seq, setSeq, togglePick, movePick, compose, analyze, autoPick, decisions, askOpen, setAskOpen } =
+  const { arrange, arranging, photos, picks, analyzing, smartMode, count, setCount, seq, setSeq, togglePick, movePick, analyze, autoPick, decisions, askOpen, setAskOpen } =
     useStore();
   const [composeAfter, setComposeAfter] = useState(false);
   // Open questions get answered before composing; the user can still defer them.
@@ -146,7 +146,7 @@ export function CurateView() {
     if (decisions.length) {
       setComposeAfter(true);
       setAskOpen(true);
-    } else compose(true);
+    } else arrange(true);
   };
   const [filter, setFilter] = useState<Filter>('all');
   const [focus, setFocus] = useState<string | null>(null);
@@ -254,8 +254,8 @@ export function CurateView() {
             )}
             {reviewed ? (
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn primary" disabled={picks.length < 1} onClick={goCompose}>
-                  Compose
+                <button className="btn primary" disabled={picks.length < 1 || arranging} onClick={goCompose}>
+                  {arranging ? 'Arranging…' : 'Compose'}
                 </button>
                 <button className="btn" onClick={autoPick}>
                   Re-pick
@@ -296,8 +296,8 @@ export function CurateView() {
           <button className="btn sm" onClick={autoPick}>
             Re-pick
           </button>
-          <button className="btn sm primary" disabled={!picks.length} onClick={goCompose}>
-            Compose
+          <button className="btn sm primary" disabled={!picks.length || arranging} onClick={goCompose}>
+            {arranging ? 'Arranging…' : 'Compose'}
           </button>
         </div>
       )}
@@ -307,7 +307,7 @@ export function CurateView() {
             setAskOpen(false);
             if (composeAfter) {
               setComposeAfter(false);
-              compose(true);
+              arrange(true);
             }
           }}
         />

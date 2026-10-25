@@ -39,15 +39,17 @@ export function ImportView() {
   const linkRef = useRef<HTMLInputElement>(null);
   const [link, setLink] = useState('');
   const [readingAlbum, setReadingAlbum] = useState(false);
+  // A pasted album is shown first (title, count, a strip of photos); nothing downloads until confirmed.
+  const [album, setAlbum] = useState<Awaited<ReturnType<typeof fetchSharedAlbum>> | null>(null);
 
   const importLink = async (url = link) => {
     if (!url.trim()) return linkRef.current?.focus();
     setError('');
+    setAlbum(null);
     setReadingAlbum(true);
     try {
-      const { entries } = await fetchSharedAlbum(url);
+      setAlbum(await fetchSharedAlbum(url));
       setReadingAlbum(false);
-      run(entries, 'photos');
     } catch (e) {
       setReadingAlbum(false);
       setError(String((e as Error).message ?? e));
@@ -186,38 +188,70 @@ export function ImportView() {
                 Google Drive
               </button>
             </div>
-            <form
-              noValidate
-              className="link-row"
-              onSubmit={(e) => {
-                e.preventDefault();
-                importLink();
-              }}
-            >
-              <input
-                ref={linkRef}
-                type="text"
-                inputMode="url"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                placeholder="Paste a Google Photos album link"
-                value={link}
-                onChange={(e) => setLink(e.target.value)}
-                onPaste={(e) => {
-                  const v = e.clipboardData.getData('text');
-                  const found = extractAlbumLink(v);
-                  if (found) {
-                    e.preventDefault();
-                    setLink(found);
-                    importLink(found);
-                  }
+            {album ? (
+              <div className="album-preview" ref={(el) => el?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
+                <div className="album-thumbs">
+                  {album.thumbs.map((t) => (
+                    <img key={t} src={t} alt="" loading="lazy" />
+                  ))}
+                </div>
+                <div className="album-meta">
+                  <div>
+                    <div className="album-title">{album.title || 'Shared album'}</div>
+                    <div className="mono faint">
+                      {album.entries.length} photos · {album.link.replace(/^https:\/\//, '')}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      className="btn sm ghost"
+                      onClick={() => {
+                        setAlbum(null);
+                        setTimeout(() => linkRef.current?.select());
+                      }}
+                    >
+                      Change link
+                    </button>
+                    <button className="btn sm primary" onClick={() => run(album.entries, 'photos')}>
+                      Import {album.entries.length} photos
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <form
+                noValidate
+                className="link-row"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  importLink();
                 }}
-              />
-              <button className="btn sm" disabled={readingAlbum}>
-                {readingAlbum ? 'Reading…' : 'Import'}
-              </button>
-            </form>
+              >
+                <input
+                  ref={linkRef}
+                  type="text"
+                  inputMode="url"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder="Paste a Google Photos album link"
+                  value={link}
+                  onChange={(e) => setLink(e.target.value)}
+                  onPaste={(e) => {
+                    const v = e.clipboardData.getData('text');
+                    const found = extractAlbumLink(v);
+                    if (found) {
+                      e.preventDefault();
+                      setLink(found);
+                      importLink(found);
+                    }
+                  }}
+                />
+                <button className="btn sm" disabled={readingAlbum}>
+                  {readingAlbum ? 'Reading…' : 'Preview'}
+                </button>
+              </form>
+            )}
             {error && (
               <p style={{ color: 'var(--bad)', marginTop: 20, marginBottom: 0 }}>
                 {error.split('\n')[0]}

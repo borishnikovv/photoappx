@@ -15,11 +15,20 @@ export function Leveled({ p, angle }: { p: Photo; angle: number }) {
 }
 
 export function AskModal({ onDone }: { onDone: () => void }) {
-  const { decisions, byId, resolve, setAskOpen } = useStore();
+  const { decisions, byId, resolve, setAskOpen, answered, undoAnswer } = useStore();
   const [total] = useState(decisions.length);
+  // Answers given in this sitting can be taken back one at a time.
+  const [startedAt] = useState(answered.length);
+  const canGoBack = answered.length > startedAt;
+  const back = (
+    <button className="btn ghost sm" disabled={!canGoBack} onClick={undoAnswer} title="Undo the last choice">
+      ← Back
+    </button>
+  );
   const [busy, setBusy] = useState(false);
   // Similar-shot questions one at a time, then every tilt question together on one screen.
-  const d = decisions.find((x) => x.kind === 'pick') ?? decisions[0];
+  // (After "Back", the restored question comes first.)
+  const d = decisions[0]?.kind === 'pick' ? decisions[0] : decisions.find((x) => x.kind === 'pick') ?? decisions[0];
   const tilts = decisions.filter((x): x is Extract<typeof x, { kind: 'straighten' }> => x.kind === 'straighten');
   const [off, setOff] = useState<Set<string>>(new Set());
 
@@ -100,6 +109,7 @@ export function AskModal({ onDone }: { onDone: () => void }) {
               })}
             </div>
             <div className="ask-foot">
+              {back}
               <span style={{ flex: 1 }} />
               <button className="btn ghost sm" onClick={() => setAskOpen(false)}>
                 Later
@@ -127,6 +137,7 @@ export function AskModal({ onDone }: { onDone: () => void }) {
         )}
         {!(d.kind === 'straighten' && tilts.length > 1) && (
           <div className="ask-foot">
+            {back}
             <button className="btn ghost sm" disabled={busy} onClick={() => choose(d.kind === 'pick' ? d.suggested : false)}>
               {d.kind === 'pick' ? 'Use my pick' : 'Leave as shot'}
             </button>

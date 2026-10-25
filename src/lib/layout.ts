@@ -14,12 +14,15 @@ export interface Template {
   weight: number;
   /** Good opener for the first slide. */
   hero?: boolean;
+  /** Geometry is the point (rows, steps, pairs): don't nudge pieces individually. */
+  rigid?: boolean;
   build: Build;
 }
 
 const ANY: Orientation[] = ['portrait', 'square', 'landscape', 'pano'];
 const TALL: Orientation[] = ['portrait', 'square'];
 const WIDE: Orientation[] = ['landscape', 'pano'];
+const SQ_WIDE: Orientation[] = ['square', 'landscape', 'pano'];
 
 /**
  * The shape a photo is laid out at. Very tall phone shots (9:16) are trimmed toward 2:3 so they
@@ -203,8 +206,81 @@ export const TEMPLATES: Template[] = [
       return [band, mk(b, pb.x, pb.y, B.w, B.h, ov(o)), mk(c, pc.x, pc.y, C.w, C.h, ov(o, 2))];
     },
   },
+  // ---- Patterns from editorial carousel apps ----
   {
-    id: 'cascade', label: 'Cascade', family: 'spread', span: 2, slots: [TALL, TALL, TALL], weight: 1.1,
+    id: 'duo-over', label: 'Stacked duo', family: 'layered', span: 1, slots: [ANY, SQ_WIDE, SQ_WIDE], weight: 1.2, rigid: true,
+    build: ([a, b, c], r, o) => {
+      // Two landscape/square frames on one slide over a backdrop: one high, one low, offset.
+      const B = fitBox(frameAspect(b, r), W * 0.76, H * 0.44);
+      const C = fitBox(frameAspect(c, r), W * 0.76, H * 0.44);
+      const leftFirst = r() > 0.5;
+      return [
+        mk(a, 0, 0, W, H, { base: true }),
+        mk(b, leftFirst ? 70 : W - B.w - 70, 90, B.w, B.h, ov(o)),
+        mk(c, leftFirst ? W - C.w - 70 : 70, H - C.h - 90, C.w, C.h, ov(o, 2)),
+      ];
+    },
+  },
+  {
+    id: 'duo-over2', label: 'Stacked duo ×2', family: 'spread', span: 2, slots: [WIDE, SQ_WIDE, SQ_WIDE], weight: 1.2,
+    build: ([a, b, c], r, o) => {
+      // The same idea across the cut: one frame high on the first slide, the other low across the cut.
+      const bg = mk(a, 0, 0, 2 * W, H, { base: true });
+      const B = fitBox(frameAspect(b, r), W * 0.8, H * 0.45);
+      const C = fitBox(frameAspect(c, r), W * 0.8, H * 0.45);
+      const pb = placeOver(bg, a, B, [90, 160, W - B.w - 90], [90, 140], () => 0);
+      const pc = placeOver(bg, a, C, straddle(W, C.w), [H - C.h - 90, H - C.h - 140], () => 0);
+      return [bg, mk(b, pb.x, pb.y, B.w, B.h, ov(o)), mk(c, pc.x, pc.y, C.w, C.h, ov(o, 2))];
+    },
+  },
+  {
+    id: 'split-h', label: 'Split', family: 'gallery', span: 1, slots: [WIDE, WIDE], weight: 0.9,
+    build: ([a, b]) => [mk(a, 0, 0, W, H / 2, { base: true }), mk(b, 0, H / 2, W, H / 2, { base: true })],
+  },
+  {
+    id: 'triptych', label: 'Triptych', family: 'layered', span: 2, slots: [WIDE, ANY, ANY, ANY], weight: 1, rigid: true,
+    build: ([a, ...ps], r, o) => {
+      // Three squares in a row over a backdrop, the middle one on the cut.
+      const size = Math.round(W * (0.5 + r() * 0.06)), gap = 36;
+      const x0 = W - size / 2 - size - gap, y = Math.round((H - size) / 2 + (r() - 0.5) * 120);
+      return [mk(a, 0, 0, 2 * W, H, { base: true }), ...ps.map((p, i) => mk(p, x0 + i * (size + gap), y, size, size, ov(o, i + 1)))];
+    },
+  },
+  {
+    id: 'diagonal', label: 'Diagonal step', family: 'layered', span: 2, slots: [WIDE, ANY, ANY, ANY], weight: 0.9, rigid: true,
+    build: ([a, ...ps], r, o) => {
+      // Three frames stepping down across two slides, the middle one on the cut.
+      const boxes = ps.map((p) => fitBox(frameAspect(p, r), W * 0.55, H * 0.42));
+      const xs = [90, W - boxes[1].w / 2, 2 * W - boxes[2].w - 90];
+      const ys = [90, (H - boxes[1].h) / 2, H - boxes[2].h - 90];
+      return [mk(a, 0, 0, 2 * W, H, { base: true }), ...ps.map((p, i) => mk(p, xs[i], ys[i], boxes[i].w, boxes[i].h, ov(o, i + 1)))];
+    },
+  },
+  {
+    id: 'window', label: 'Window', family: 'gallery', span: 1, slots: [ANY, ANY], weight: 0.8,
+    build: ([a, b], r, o) => {
+      // One photo centered over a soft, tightly zoomed backdrop, like a print on a wall of color.
+      const box = fitBox(frameAspect(b, r), W * 0.74, H * 0.72);
+      return [
+        { ...mk(a, 0, 0, W, H, { base: true }), crop: { ...focalPoint(a), zoom: 1.6 } },
+        mk(b, (W - box.w) / 2, (H - box.h) / 2 - 20, box.w, box.h, ov(o)),
+      ];
+    },
+  },
+  {
+    id: 'big-detail', label: 'Big + detail', family: 'layered', span: 1, slots: [ANY, ANY, ANY], weight: 0.9, rigid: true,
+    build: ([a, b, c], r, o) => {
+      // A large frame with a small detail shot overlapping its lower corner.
+      const B = fitBox(frameAspect(b, r), W * 0.78, H * 0.62);
+      const C = fitBox(frameAspect(c, r), W * 0.46, H * 0.36);
+      const left = r() > 0.5;
+      const bx = left ? 70 : W - B.w - 70, by = 100;
+      const cx = left ? Math.min(W - C.w - 60, bx + B.w - C.w * 0.6) : Math.max(60, bx - C.w * 0.4), cy = Math.min(H - C.h - 80, by + B.h - C.h * 0.45);
+      return [mk(a, 0, 0, W, H, { base: true }), mk(b, bx, by, B.w, B.h, ov(o)), mk(c, cx, cy, C.w, C.h, ov(o, 2))];
+    },
+  },
+  {
+    id: 'cascade', label: 'Cascade', family: 'spread', span: 2, slots: [TALL, TALL, TALL], weight: 1.1, rigid: true,
     build: (ps, r, o) => {
       // Three portraits stepping high-low-high, each overlapping the last, the middle one on the cut.
       const boxes = ps.map((p, i) => fitBox(frameAspect(p, r), W * 0.62, H * (i % 2 ? 0.7 : 0.6)));
@@ -325,7 +401,7 @@ export const TEMPLATES: Template[] = [
     },
   },
   {
-    id: 'strip3', label: 'Film strip', family: 'gallery', span: 2, slots: [TALL, TALL, TALL], weight: 0.9,
+    id: 'strip3', label: 'Film strip', family: 'gallery', span: 2, slots: [TALL, TALL, TALL], weight: 0.9, rigid: true,
     build: (ps) => {
       const gap = 60;
       const boxes = ps.map((p) => fitBox(aspect(p), 560, 760));
@@ -382,7 +458,7 @@ export function finishSection(sec: Section, byId: Map<string, Photo>): Section {
   sec.items = coverSection(sec.items, byId, sec.span);
   for (const it of sec.items) if (!it.base) growToReadable(it, sec.span);
   for (const it of sec.items) artCrop(it, byId.get(it.photoId)!, sec.span);
-  settleOverlays(sec.items, byId);
+  if (!templateById(sec.template)?.rigid) settleOverlays(sec.items, byId);
   keepFacesOffSeams(sec, ps);
   return sec;
 }
@@ -403,6 +479,14 @@ function growToReadable(it: Spec, span: number) {
   it.y = Math.round(Math.max(30, Math.min(H - it.h - 30, cy - it.h / 2)));
 }
 
+/** Whether a set of rectangles together leaves no gap anywhere in the section. */
+function tilesCover(tiles: Spec[], span: number) {
+  for (let x = 10; x < span * W; x += 40)
+    for (let y = 10; y < H; y += 40)
+      if (!tiles.some((t) => x >= t.x && x <= t.x + t.w && y >= t.y && y <= t.y + t.h)) return false;
+  return true;
+}
+
 const fullyCovers = (it: Spec, span: number) => it.x <= 0 && it.y <= 0 && it.x + it.w >= span * W && it.y + it.h >= H;
 
 /**
@@ -415,6 +499,10 @@ function coverSection<T extends Spec>(items: T[], byId: Map<string, Photo>, span
   const layout = items.filter((i) => !i.bridge);
   const asBase = (it: T, x: number, w: number): T => ({ ...it, x, y: 0, w, h: H, border: 0, shadow: false, z: 0, base: true });
   const overlay = (it: T): T => ({ ...it, base: false, z: Math.max(1, it.z) });
+  // A layout may tile its own backdrop (e.g. two landscapes stacked): keep it if the tiles fill it.
+  const declared = layout.filter((it) => it.base);
+  if (declared.length > 1 && tilesCover(declared, span))
+    return [...layout.map((it) => (it.base ? { ...it, border: 0, shadow: false, z: 0 } : overlay(it))), ...bridges];
   const whole = layout.find((it) => fullyCovers(it, span));
   if (whole) return [...layout.map((it) => (it === whole ? asBase(it, 0, span * W) : overlay(it))), ...bridges];
   if (!layout.length) return items;
@@ -468,8 +556,8 @@ function artCrop(it: Spec, p: Photo, span: number) {
   const maxZoom = Math.min(1.5, Math.max(1, (p.width * Math.min(1, sourceRect(p, { ...it, crop: { ...it.crop, zoom: 1 } }).sw)) / (it.w * 0.9)));
   let best = it.crop, bestC = Infinity;
   for (const zoom of [1, 1.1, 1.2, 1.32, 1.45].filter((z) => z <= maxZoom))
-    for (let fx = 0; fx <= 1.0001; fx += 0.04)
-      for (let fy = 0; fy <= 1.0001; fy += 0.04) {
+    for (let fx = 0; fx <= 1.0001; fx += 0.05)
+      for (let fy = 0; fy <= 1.0001; fy += 0.05) {
         const { sx, sy, sw, sh } = sourceRect(p, { ...it, crop: { fx, fy, zoom } });
         // Subject must stay whole (a little trimming is tolerated); heavily penalize cutting it.
         const cut = Math.max(0, sx - sx0) + Math.max(0, sx1 - (sx + sw)) + Math.max(0, sy - sy0) + Math.max(0, sy1 - (sy + sh));
@@ -579,42 +667,128 @@ export const VARIANTS: Emphasis[] = [
   { name: 'Gallery', boost: { gallery: 2.2, spread: 0.8, base: 0.5 } },
 ];
 
+/**
+ * How good a laid-out section looks, roughly 0 (poor) … 1 (excellent). An art director's checklist:
+ * nothing important hidden, everything readable, photos cropped kindly and kept sharp, weight
+ * balanced on each slide, breathing room at the outer edges, frames that line up, clean crossings
+ * of the cuts, colors that belong together.
+ */
+export function scoreSection(sec: Section, byId: Map<string, Photo>) {
+  const items = sec.items.filter((i) => !i.bridge);
+  const bases = items.filter((i) => i.base), ovs = items.filter((i) => !i.base);
+  const notes: Record<string, number> = {};
+  // Hidden subjects and faces (cost per unit of overlay area).
+  let hidden = 0;
+  for (const o of ovs)
+    for (const b of bases) hidden += coverCost({ x0: o.x, x1: o.x + o.w, y0: o.y, y1: o.y + o.h }, b, byId.get(b.photoId)!) / (o.w * o.h);
+  notes.hidden = Math.min(1, hidden / Math.max(1, ovs.length) / 0.9);
+  // Overlays covering each other too much.
+  let lap = 0;
+  for (let i = 0; i < ovs.length; i++)
+    for (let j = i + 1; j < ovs.length; j++) {
+      const A = ovs[i], B = ovs[j];
+      const o = area({ x0: A.x, x1: A.x + A.w, y0: A.y, y1: A.y + A.h }, { x0: B.x, x1: B.x + B.w, y0: B.y, y1: B.y + B.h });
+      lap += Math.max(0, o / Math.min(A.w * A.h, B.w * B.h) - 0.25);
+    }
+  notes.overlap = Math.min(1, lap);
+  // Crops: too little of the photo left, or blown up past its resolution.
+  let crop = 0;
+  for (const it of items) {
+    const p = byId.get(it.photoId)!;
+    const { sw, sh } = sourceRect(p, it);
+    crop += Math.max(0, 0.4 - sw * sh) * 2 + Math.max(0, it.w / (sw * p.width) - 1.15) * 0.8;
+  }
+  notes.crop = Math.min(1, crop / items.length);
+  // Readability: frames under half a slide are hard to see on a phone.
+  notes.small = Math.min(1, ovs.reduce((t, o) => t + Math.max(0, 0.5 - Math.max(o.w / W, o.h / H)) * 3, 0));
+  // Balance: on each slide, the frames' visual weight shouldn't all sit on one side.
+  let tilt = 0;
+  for (let k = 0; k < sec.span; k++) {
+    let m = 0, mx = 0;
+    for (const o of ovs) {
+      const x0 = Math.max(o.x, k * W), x1 = Math.min(o.x + o.w, (k + 1) * W);
+      if (x1 <= x0) continue;
+      const a2 = (x1 - x0) * o.h;
+      m += a2;
+      mx += a2 * ((x0 + x1) / 2 - k * W);
+    }
+    if (m) tilt += Math.abs(mx / m - W / 2) / W;
+  }
+  notes.balance = Math.min(1, tilt / sec.span) * 0.8;
+  // Breathing room: frames shouldn't crowd the carousel's top/bottom or a slide's outer edge.
+  notes.margin = Math.min(1, ovs.reduce((t, o) => t + (o.y < 40 ? 0.3 : 0) + (o.y + o.h > H - 40 ? 0.3 : 0) + (o.x < 30 && o.x > -o.w ? 0.2 : 0), 0));
+  // Rhythm: frames that share an edge or center line read as designed.
+  let aligned = 0;
+  for (let i = 0; i < ovs.length; i++)
+    for (let j = i + 1; j < ovs.length; j++) {
+      const A = ovs[i], B = ovs[j];
+      const xs = [A.x, A.x + A.w / 2, A.x + A.w], xs2 = [B.x, B.x + B.w / 2, B.x + B.w];
+      const ys = [A.y, A.y + A.h / 2, A.y + A.h], ys2 = [B.y, B.y + B.h / 2, B.y + B.h];
+      if (xs.some((x) => xs2.some((x2) => Math.abs(x - x2) < 14)) || ys.some((y) => ys2.some((y2) => Math.abs(y - y2) < 14))) aligned++;
+    }
+  notes.aligned = -Math.min(0.3, aligned * 0.15);
+  // Cuts: crossing one is good (continuity) but never by a sliver.
+  let seams = 0;
+  for (const o of ovs)
+    for (let sx = W; sx < sec.span * W; sx += W)
+      if (o.x < sx && o.x + o.w > sx) seams += Math.min(sx - o.x, o.x + o.w - sx) >= 0.22 * o.w ? -0.15 : 0.4;
+  notes.seams = Math.max(-0.3, Math.min(1, seams));
+  // Color: frames should belong to their backdrop.
+  let color = 0;
+  for (const o of ovs) color += bases.length ? Math.min(...bases.map((b) => labDist(byId.get(o.photoId)!, byId.get(b.photoId)!))) / 120 : 0;
+  notes.color = Math.min(1, color / Math.max(1, ovs.length));
+  const W8: Record<string, number> = { hidden: 3, overlap: 1.5, crop: 2, small: 1.5, balance: 1, margin: 0.8, aligned: 1, seams: 1, color: 0.8 };
+  const penalty = Object.entries(notes).reduce((t, [k, v]) => t + W8[k] * v, 0);
+  return { score: Math.max(0, 1 - penalty / 6), notes };
+}
+
+/**
+ * Lays the photos out section by section. At each step every layout that fits the next photos is
+ * actually built (with a couple of variations) and scored by `scoreSection`; the best wins, with
+ * a nudge for the chosen style, for variety (no repeats back to back), for strong openers, and
+ * for using photos at the pace needed to fill the carousel.
+ */
 export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number, emph: Emphasis): Carousel {
   const r = rng(seed);
   const queue = [...photos];
   const sections: Section[] = [];
+  const byId = new Map(photos.map((p) => [p.id, p]));
   let slides = 0;
-  let last = '';
+  const recent: string[] = [];
   const allowed = TEMPLATES.filter((t) => t.family === 'base' || o.families[t.family]);
 
   while (queue.length && slides < o.maxSlides) {
     const left = o.maxSlides - slides;
     // Photos per slide we need from here on to fit everything in.
     const density = queue.length / left;
-    const options: { t: Template; ps: Photo[]; w: number }[] = [];
+    let best: { sec: Section; t: Template; ps: Photo[]; v: number } | null = null;
     for (const t of allowed) {
       if (t.span > left) continue;
-      const ps = assign(t, queue.slice(0, t.family === 'spread' ? 7 : 5));
+      const ps = assign(t, queue.slice(0, t.family === 'spread' ? 7 : 6));
       if (!ps) continue;
       let w = t.weight * (emph.boost[t.family] ?? 1);
-      if (t.id === last) w *= 0.15;
-      if (sections.length === 0) w *= t.hero ? 3 : 0.4;
+      if (recent[0] === t.id) w *= 0.1;
+      else if (recent.includes(t.id)) w *= 0.5;
+      if (sections.length === 0) w *= t.hero ? 2.5 : 0.4;
+      // Pace: use photos at the rate that fills the carousel exactly — not faster, not slower.
       const perSlide = ps.length / t.span;
-      if (density > 1) w *= Math.pow(perSlide, 1.5);
-      else if (density < 0.6) w *= t.span > 1 ? 1.6 : 0.8;
-      options.push({ t, ps, w });
+      w *= Math.exp(-1.4 * Math.abs(perSlide - density));
+      for (let k = 0; k < 2; k++) {
+        const sec = buildSection(t, ps, rng(Math.floor(r() * 1e9)), o);
+        const v = scoreSection(sec, byId).score * 3 + Math.log(w) * 0.6 + r() * 0.25;
+        if (!best || v > best.v) best = { sec, t, ps, v };
+      }
     }
-    if (!options.length) {
-      // Nothing fits this photo with the chosen styles: fall back to a framed or full-bleed slide.
-      const t = templateById(o.families.gallery || photoOrientation(queue[0]) === 'landscape' ? 'framed' : 'full');
-      options.push({ t, ps: [queue[0]], w: 1 });
+    if (!best) {
+      // Nothing fits this photo with the chosen styles: a full-bleed slide.
+      const t = templateById('full');
+      best = { sec: buildSection(t, [queue[0]], r, o), t, ps: [queue[0]], v: 0 };
     }
-    let x = r() * options.reduce((s, c) => s + c.w, 0);
-    const choice = options.find((c) => (x -= c.w) <= 0) ?? options[options.length - 1];
-    sections.push(buildSection(choice.t, choice.ps, r, o));
-    for (const p of choice.ps) queue.splice(queue.indexOf(p), 1);
-    slides += choice.t.span;
-    last = choice.t.id;
+    sections.push(best.sec);
+    for (const p of best.ps) queue.splice(queue.indexOf(p), 1);
+    slides += best.t.span;
+    recent.unshift(best.t.id);
+    recent.length = Math.min(recent.length, 3);
   }
   return { id: uid('car'), name: emph.name, seed, sections };
 }
@@ -662,7 +836,7 @@ export function addBridges(c: Carousel, reserve: Photo[], byId: Map<string, Phot
     const owner = starts.findIndex((st, i) => st + sections[i].span === k);
     if (owner < 0 || !pool.length) continue;
     // Keep it minimal: a busy slide on either side gets a clean cut instead of one more photo.
-    const onSlide = (j: number) => abs().filter((it) => it.x < (j + 1) * W - 20 && it.x + it.w > j * W + 20).length;
+    const onSlide = (j: number) => abs().filter((it) => !it.base && it.x < (j + 1) * W - 20 && it.x + it.w > j * W + 20).length;
     if (onSlide(k - 1) > 2 || onSlide(k) > 2) continue;
     // Prefer a photo whose colors belong next to what's on either side of the cut.
     const near = abs().filter((it) => it.x < seam + W / 2 && it.x + it.w > seam - W / 2);

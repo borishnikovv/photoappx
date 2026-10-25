@@ -7,7 +7,7 @@ const LINK_RE = /https?:\/\/(?:photos\.app\.goo\.gl|goo\.gl|photos\.google\.com)
 /** Pulls an album link out of whatever was pasted (quotes, spaces, surrounding text). */
 export const extractAlbumLink = (s: string) => s.match(LINK_RE)?.[0].replace(/^http:/, 'https:') ?? null;
 
-export async function fetchSharedAlbum(text: string): Promise<{ title: string; entries: DriveEntry[] }> {
+export async function fetchSharedAlbum(text: string): Promise<{ title: string; link: string; thumbs: string[]; entries: DriveEntry[] }> {
   const link = extractAlbumLink(text);
   if (!link) throw new Error('Paste a Google Photos album link, like https://photos.app.goo.gl/…');
   const r = await fetch(`/api/gphotos-album?url=${encodeURIComponent(link)}`);
@@ -22,6 +22,9 @@ export async function fetchSharedAlbum(text: string): Promise<{ title: string; e
   const base = Date.now() - body.photos.length * 1000;
   return {
     title: body.title,
+    link,
+    // Small square previews straight from Google, for confirming it's the right album.
+    thumbs: body.photos.slice(0, 12).map((p: { url: string }) => `${p.url}=w240-h240-c`),
     entries: body.photos.map((p: { url: string }, i: number) => ({
       name: `${body.title || 'album'}-${String(i + 1).padStart(3, '0')}.jpg`,
       date: base + i * 1000,

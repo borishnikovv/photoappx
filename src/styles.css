@@ -292,3 +292,11 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
 .crop-edge.t, .crop-edge.b { left: 50%; height: 6px; width: 34px; margin-left: -17px; cursor: ns-resize; }
 .crop-edge.l { left: 0; } .crop-edge.r { right: 0; } .crop-edge.t { top: 0; } .crop-edge.b { bottom: 0; }
 .item.cropping { outline-style: dashed; }
+
+/* Album link preview: confirm before importing. */
+.album-preview { max-width: 560px; margin: 22px auto 0; border: 1px solid var(--line-2); border-radius: 14px; overflow: hidden; text-align: left; background: var(--bg-1); }
+.album-thumbs { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
+.album-thumbs img { width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--bg-2); }
+.album-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; flex-wrap: wrap; }
+.album-title { font-size: 15px; }
+@media (max-width: 860px) { .album-thumbs { grid-template-columns: repeat(4, 1fr); } .album-thumbs img:nth-child(n + 9) { display: none; } }
