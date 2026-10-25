@@ -1,56 +1,21 @@
 // Google Drive picker. Needs VITE_GOOGLE_CLIENT_ID and VITE_GOOGLE_API_KEY (see README).
 // Photos are downloaded straight from Google into the browser; nothing passes through a server.
 
+import { GOOGLE_CLIENT_ID, accessToken as signIn, script } from './google';
+
 declare const google: any;
 declare const gapi: any;
 
-const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY as string | undefined;
 const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+const accessToken = () => signIn(SCOPE);
 
-export const driveConfigured = Boolean(CLIENT_ID && API_KEY);
+export const driveConfigured = Boolean(GOOGLE_CLIENT_ID && API_KEY);
 
 export interface DriveEntry {
   name: string;
   date?: number;
   file: () => Promise<Blob>;
-}
-
-const scripts = new Map<string, Promise<void>>();
-function script(src: string) {
-  let p = scripts.get(src);
-  if (!p) {
-    p = new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = src;
-      s.async = true;
-      s.onload = () => res();
-      s.onerror = () => rej(new Error(`Failed to load ${src}`));
-      document.head.appendChild(s);
-    });
-    scripts.set(src, p);
-  }
-  return p;
-}
-
-let token: { value: string; expires: number } | null = null;
-
-async function accessToken(): Promise<string> {
-  if (token && token.expires > Date.now() + 60_000) return token.value;
-  await script('https://accounts.google.com/gsi/client');
-  return new Promise((res, rej) => {
-    const client = google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPE,
-      callback: (r: any) => {
-        if (r.error) return rej(new Error(r.error_description || r.error));
-        token = { value: r.access_token, expires: Date.now() + r.expires_in * 1000 };
-        res(r.access_token);
-      },
-      error_callback: (e: any) => rej(new Error(e?.message || 'Google sign-in was cancelled')),
-    });
-    client.requestAccessToken({ prompt: token ? '' : 'consent' });
-  });
 }
 
 async function api(path: string, t: string) {

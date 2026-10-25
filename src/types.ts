@@ -36,7 +36,7 @@ export interface Analysis {
 export interface Photo {
   id: string;
   name: string;
-  source: 'local' | 'drive';
+  source: 'local' | 'drive' | 'photos';
   file: Blob;
   width: number;
   height: number;

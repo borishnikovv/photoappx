@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useStore } from '../store';
 import { loadFiles } from '../lib/importer';
 import { driveConfigured, pickFromDrive } from '../lib/drive';
+import { photosConfigured, photosSignedIn, pickFromGooglePhotos, signInToPhotos } from '../lib/gphotos';
 
 type Entry = Parameters<typeof loadFiles>[0][number];
 
@@ -32,8 +33,10 @@ export function ImportView() {
   const filesRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const [error, setError] = useState('');
+  const [gp, setGp] = useState<'idle' | 'ready' | 'picking'>('idle');
+  const gpAbort = useRef<AbortController | null>(null);
 
-  const run = async (entries: Entry[], source: 'local' | 'drive') => {
+  const run = async (entries: Entry[], source: 'local' | 'drive' | 'photos') => {
     setError('');
     if (!entries.length) return;
     setImporting({ done: 0, total: entries.length });
@@ -56,6 +59,36 @@ export function ImportView() {
     }
   };
 
+  const googlePhotos = async () => {
+    setError('');
+    // First tap signs in (Google's popup). The picker opens on the next tap, so the browser
+    // treats it as a direct click and doesn't block the new tab.
+    if (!photosSignedIn()) {
+      try {
+        await signInToPhotos();
+        setGp('ready');
+      } catch (e) {
+        setError(String((e as Error).message ?? e));
+      }
+      return;
+    }
+    const win = window.open('', '_blank');
+    win?.document.write(
+      '<body style="margin:0;background:#0a0a0a;color:#888;font:14px system-ui;display:grid;place-items:center;height:100vh">Opening Google Photos…</body>',
+    );
+    gpAbort.current = new AbortController();
+    setGp('picking');
+    try {
+      const entries = await pickFromGooglePhotos(win, gpAbort.current.signal);
+      setGp('idle');
+      if (entries.length) run(entries, 'photos');
+    } catch (e) {
+      setGp('idle');
+      win?.close();
+      setError(String((e as Error).message ?? e));
+    }
+  };
+
   return (
     <div className="import">
       <div
@@ -71,7 +104,23 @@ export function ImportView() {
           run(await fromDrop(e.dataTransfer), 'local');
         }}
       >
-        {importing ? (
+        {gp === 'picking' && !importing ? (
+          <>
+            <h1>Choose in Google Photos</h1>
+            <p>
+              Pick the photos in the Google Photos tab and tap <b>Done</b>. They'll appear here automatically.
+            </p>
+            <button
+              className="btn"
+              onClick={() => {
+                gpAbort.current?.abort();
+                setGp('idle');
+              }}
+            >
+              Cancel
+            </button>
+          </>
+        ) : importing ? (
           <>
             <h1>Reading photos</h1>
             <p className="mono">
@@ -101,6 +150,14 @@ export function ImportView() {
               </button>
               <button className="btn" onClick={() => filesRef.current?.click()}>
                 Choose photos
+              </button>
+              <button
+                className={`btn ${gp === 'ready' ? 'primary' : ''}`}
+                onClick={googlePhotos}
+                disabled={!photosConfigured}
+                title={photosConfigured ? '' : 'Add a Google client ID to enable (see README)'}
+              >
+                {gp === 'ready' ? 'Open Google Photos →' : 'Google Photos'}
               </button>
               <button
                 className="btn"
