@@ -300,3 +300,12 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
 .album-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; flex-wrap: wrap; }
 .album-title { font-size: 15px; }
 @media (max-width: 860px) { .album-thumbs { grid-template-columns: repeat(4, 1fr); } .album-thumbs img:nth-child(n + 9) { display: none; } }
+
+/* Layout alternatives for one section. */
+.alts { border-top: 1px solid var(--line); padding: 12px 24px; background: var(--bg-1); }
+.alts-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.alts-row { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 4px; }
+.alt { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; flex: none; }
+.alt:hover { border-color: var(--fg-2); }
+.alt .mono { color: var(--fg-2); }
+.btn.pinned { color: var(--accent); }

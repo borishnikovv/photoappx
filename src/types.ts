@@ -92,6 +92,8 @@ export interface Item {
 
 export interface Section {
   id: string;
+  /** Kept exactly as is (place and content) when the carousel is regenerated. */
+  pinned?: boolean;
   template: string;
   span: number;
   photoIds: string[];

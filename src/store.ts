@@ -59,6 +59,17 @@ interface State {
   /** on/off uses the detected tilt; a number sets the correction by hand (0 = as shot). */
   /** on/off uses what was detected; { tilt, keystone } sets the correction by hand (0, 0 = as shot). */
   setStraight: (photoId: string, on: boolean | { tilt: number; keystone: number }) => Promise<void>;
+  /** Editor history: every layout change can be undone and redone. */
+  past: { carousels: Carousel[]; active: number }[];
+  future: { carousels: Carousel[]; active: number }[];
+  undo: () => void;
+  redo: () => void;
+  /** Keep this section exactly as is when regenerating. */
+  togglePin: (sectionId: string) => void;
+  /** Trade the photos in two frames (they can be in different layouts); each frame keeps its shape. */
+  swapItems: (a: { sectionId: string; itemId: string }, b: { sectionId: string; itemId: string }) => void;
+  /** Replace a section with one of its alternatives (seam photos stay). */
+  replaceSection: (sectionId: string, next: Section) => void;
 }
 
 const defaultStyle: StyleOptions = {
@@ -70,10 +81,27 @@ const defaultStyle: StyleOptions = {
 };
 
 export const useStore = create<State>((set, get) => {
-  const editActive = (fn: (c: Carousel) => Carousel) =>
+  // History: snapshots of the layouts before each change. A stream of tiny changes to the same
+  // thing (one drag, one slider move) coalesces into a single step.
+  let lastKey = '', lastAt = 0;
+  const checkpoint = (key = '') => {
+    const now = Date.now();
+    if (key && key === lastKey && now - lastAt < 800) {
+      lastAt = now;
+      return;
+    }
+    lastKey = key;
+    lastAt = now;
+    const { carousels, active, past } = get();
+    if (!carousels.length) return;
+    set({ past: [...past.slice(-49), { carousels, active }], future: [] });
+  };
+  const editActive = (fn: (c: Carousel) => Carousel, key = '') => {
+    checkpoint(key);
     set((s) => ({ carousels: s.carousels.map((c, i) => (i === s.active ? fn(c) : c)) }));
-  const editSection = (id: string, fn: (sec: Section) => Section) =>
-    editActive((c) => ({ ...c, sections: c.sections.map((s) => (s.id === id ? fn(s) : s)) }));
+  };
+  const editSection = (id: string, fn: (sec: Section) => Section, key = '') =>
+    editActive((c) => ({ ...c, sections: c.sections.map((s) => (s.id === id ? fn(s) : s)) }), key);
   const replacePhoto = (id: string, patch: Partial<Photo>) =>
     set((s) => {
       const photos = s.photos.map((p) => (p.id === id ? { ...p, ...patch } : p));
@@ -120,6 +148,8 @@ export const useStore = create<State>((set, get) => {
     askOpen: false,
     arranging: false,
     answered: [],
+    past: [],
+    future: [],
 
     setStep: (step) => set({ step }),
     addPhotos: (ps) =>
@@ -236,17 +266,72 @@ export const useStore = create<State>((set, get) => {
     },
 
     compose: (reseed) => {
-      const { picks, byId, style, carousels } = get();
-      const ps = picks.map((id) => byId.get(id)!).filter(Boolean);
+      const { picks, byId, style, carousels, active } = get();
+      checkpoint();
+      // Pinned sections keep their place and photos; everything else is laid out around them.
+      const pinned: { at: number; sec: Section }[] = [];
+      let at = 0;
+      for (const sec of carousels[active]?.sections ?? []) {
+        if (sec.pinned) pinned.push({ at, sec });
+        at += sec.span;
+      }
+      const held = new Set(pinned.flatMap((p) => p.sec.items.map((i) => i.photoId)));
+      const ps = picks.filter((id) => !held.has(id)).map((id) => byId.get(id)!).filter(Boolean);
+      const heldSlides = pinned.reduce((n, p) => n + p.sec.span, 0);
       const base = reseed || !carousels.length ? Math.floor(Math.random() * 1e9) : carousels[0].seed;
+      const withPins = (c: Carousel): Carousel => {
+        if (!pinned.length) return c;
+        const sections = [...c.sections];
+        for (const { at: want, sec } of pinned) {
+          let idx = 0, slide = 0;
+          while (idx < sections.length && slide + sections[idx].span <= want) slide += sections[idx++].span;
+          sections.splice(idx, 0, sec);
+        }
+        return { ...c, sections };
+      };
       set({
         carousels: VARIANTS.map((v, i) => {
-          const c = generateCarousel(ps, style, base + i * 7919, v);
-          return { ...fixSlivers(addBridges(fixSlivers(c), reserveFor(c), byId, style, base + i)), ground: groundFor(ps) };
+          const c = withPins(generateCarousel(ps, { ...style, maxSlides: Math.max(1, style.maxSlides - heldSlides) }, base + i * 7919, v));
+          return { ...fixSlivers(addBridges(fixSlivers(c), reserveFor(c), byId, style, base + i)), ground: groundFor(picks.map((id) => byId.get(id)!).filter(Boolean)) };
         }),
         selected: null,
         step: 'compose',
       });
+    },
+    undo: () => {
+      const { past, future, carousels, active } = get();
+      const prev = past[past.length - 1];
+      if (!prev) return;
+      lastKey = '';
+      set({ past: past.slice(0, -1), future: [{ carousels, active }, ...future], carousels: prev.carousels, active: prev.active, selected: null });
+    },
+    redo: () => {
+      const { past, future, carousels, active } = get();
+      const next = future[0];
+      if (!next) return;
+      lastKey = '';
+      set({ future: future.slice(1), past: [...past, { carousels, active }], carousels: next.carousels, active: next.active, selected: null });
+    },
+    togglePin: (id) => editSection(id, (sec) => ({ ...sec, pinned: !sec.pinned })),
+    swapItems: (a, b) => {
+      const c = get().carousels[get().active];
+      const find = (r: { sectionId: string; itemId: string }) => c.sections.find((x) => x.id === r.sectionId)?.items.find((i) => i.id === r.itemId);
+      const A = find(a), B = find(b);
+      if (!A || !B || A === B) return;
+      const reset = { fx: 0.5, fy: 0.5, zoom: 1 };
+      editActive((car) => ({
+        ...car,
+        sections: car.sections.map((sec) => ({
+          ...sec,
+          items: sec.items.map((it) => (it.id === A.id ? { ...it, photoId: B.photoId, crop: reset } : it.id === B.id ? { ...it, photoId: A.photoId, crop: reset } : it)),
+          photoIds: sec.photoIds.map((pid) => (sec.id === a.sectionId && pid === A.photoId ? B.photoId : sec.id === b.sectionId && pid === B.photoId ? A.photoId : pid)),
+        })),
+      }));
+      set({ selected: b });
+    },
+    replaceSection: (id, next) => {
+      editSection(id, (sec) => ({ ...next, id: sec.id, pinned: sec.pinned, items: [...next.items.filter((i) => !i.bridge), ...sec.items.filter((i) => i.bridge)] }));
+      set({ selected: null });
     },
     arrange: (reseed) => {
       set({ arranging: true });
@@ -258,7 +343,7 @@ export const useStore = create<State>((set, get) => {
     setActive: (active) => set({ active, selected: null }),
     select: (selected) => set({ selected }),
     updateItem: (sectionId, itemId, patch) =>
-      editSection(sectionId, (s) => ({ ...s, items: s.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) })),
+      editSection(sectionId, (s) => ({ ...s, items: s.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) }), `item:${itemId}:${Object.keys(patch).sort().join(',')}`),
     moveSection: (id, dir) =>
       editActive((c) => {
         const i = c.sections.findIndex((s) => s.id === id);
@@ -353,7 +438,7 @@ export const useStore = create<State>((set, get) => {
       const t = templateById(o === 'pano' ? 'pano2' : o === 'landscape' ? (style.families.pano ? 'pano2' : 'framed') : 'full');
       editActive((c) => ({ ...c, sections: [...c.sections, rebuildSection({ id: `sec_${photoId}_${Date.now()}` } as Section, t, [p], style, Date.now())] }));
     },
-    reset: () => set({ step: 'import', photos: [], byId: new Map(), picks: [], carousels: [], selected: null, smartMode: null, decisions: [], askOpen: false, answered: [] }),
+    reset: () => set({ step: 'import', photos: [], byId: new Map(), picks: [], carousels: [], selected: null, smartMode: null, decisions: [], askOpen: false, answered: [], past: [], future: [] }),
   };
 });
 

@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { CarouselCanvas, type EditMode } from './CarouselCanvas';
-import { templateById } from '../lib/layout';
+import { compatibleTemplates, rebuildSection, scoreSection, templateById } from '../lib/layout';
 import { SLIDE_H, SLIDE_W, slideCount } from '../lib/geometry';
-import type { Family } from '../types';
+import type { Family, Section } from '../types';
 
 const FRAMES = ['#f4f1ea', '#ffffff', '#0d0d0d'];
 const FAMILIES: { id: Family; label: string }[] = [
@@ -76,6 +76,55 @@ function Preview({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** Scored alternatives for one section: the same photos in other layouts, best first. */
+function Alternatives({ sectionId, onClose }: { sectionId: string; onClose: () => void }) {
+  const { carousels, active, byId, style, replaceSection } = useStore();
+  const c = carousels[active];
+  const sec = c.sections.find((x) => x.id === sectionId);
+  const options = useMemo(() => {
+    if (!sec) return [];
+    const ps = sec.items.filter((i) => !i.bridge).map((i) => byId.get(i.photoId)!).filter(Boolean);
+    const built: { sec: Section; score: number }[] = [];
+    for (const t of compatibleTemplates(ps, style))
+      for (let k = 0; k < (t.rigid ? 1 : 2); k++) {
+        const alt = rebuildSection({ ...sec, items: [] }, t, ps, style, Math.floor(Math.random() * 1e9));
+        built.push({ sec: alt, score: scoreSection(alt, byId).score });
+      }
+    // Best per layout, then the best four overall.
+    const best = new Map<string, { sec: Section; score: number }>();
+    for (const b of built) if (!best.has(b.sec.template) || best.get(b.sec.template)!.score < b.score) best.set(b.sec.template, b);
+    return [...best.values()].filter((b) => b.sec.template !== sec.template).sort((a, b) => b.score - a.score).slice(0, 4);
+  }, [sec, byId, style]);
+  if (!sec) return null;
+  const h = 150, scale = h / SLIDE_H;
+  return (
+    <div className="alts" onPointerDown={(e) => e.stopPropagation()}>
+      <div className="alts-head">
+        <span className="mono faint">Other layouts for these photos</span>
+        <button className="btn ghost sm" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <div className="alts-row">
+        {options.length ? (
+          options.map((o) => (
+            <button key={o.sec.id} className="alt" onClick={() => (replaceSection(sectionId, o.sec), onClose())}>
+              <div style={{ pointerEvents: 'none' }}>
+                <CarouselCanvas carousel={{ ...c, sections: [o.sec] }} photos={byId} style={style} scale={scale} />
+              </div>
+              <span className="mono">
+                {templateById(o.sec.template).label} · {Math.round(o.score * 100)}
+              </span>
+            </button>
+          ))
+        ) : (
+          <span className="faint">No other layouts fit these photos.</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ComposeView() {
   const s = useStore();
   const { carousels, active, setActive, byId, style, setStyle, selected, select, updateItem, picks, photos } = s;
@@ -85,6 +134,29 @@ export function ComposeView() {
   const scale = fit * zoom;
   const [mode, setMode] = useState<EditMode>('frame');
   const [preview, setPreview] = useState(false);
+  const [alts, setAlts] = useState<string | null>(null);
+  // "Swap with…": the next photo tapped trades places with the selected one.
+  const [swapFrom, setSwapFrom] = useState<{ sectionId: string; itemId: string } | null>(null);
+  const onSelect = (next: { sectionId: string; itemId: string } | null) => {
+    if (swapFrom && next && next.itemId !== swapFrom.itemId) {
+      s.swapItems(swapFrom, next);
+      setSwapFrom(null);
+      return;
+    }
+    if (!next) setSwapFrom(null);
+    select(next);
+  };
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z') return;
+      if ((e.target as HTMLElement)?.tagName === 'INPUT' && (e.target as HTMLInputElement).type === 'text') return;
+      e.preventDefault();
+      if (e.shiftKey) useStore.getState().redo();
+      else useStore.getState().undo();
+    };
+    addEventListener('keydown', k);
+    return () => removeEventListener('keydown', k);
+  }, []);
 
   const sel = useMemo(() => {
     if (!selected || !c) return null;
@@ -121,6 +193,12 @@ export function ComposeView() {
         </div>
         <button className="btn sm" disabled={s.arranging} onClick={() => s.arrange(true)} title="New layouts with the same photos">
           {s.arranging ? 'Arranging…' : 'Regenerate'}
+        </button>
+        <button className="btn sm ghost icon" title="Undo (Ctrl/⌘+Z)" disabled={!s.past.length} onClick={s.undo}>
+          ↶
+        </button>
+        <button className="btn sm ghost icon" title="Redo (Shift+Ctrl/⌘+Z)" disabled={!s.future.length} onClick={s.redo}>
+          ↷
         </button>
         <div className="sep" />
         {FAMILIES.map((f) => (
@@ -175,7 +253,7 @@ export function ComposeView() {
           guides
           mode={mode}
           selected={selected}
-          onSelect={select}
+          onSelect={onSelect}
           onChange={updateItem}
           renderSection={(id, left, width, i) => {
             const sec = c.sections.find((x) => x.id === id)!;
@@ -194,6 +272,12 @@ export function ComposeView() {
                   <button className="btn ghost icon sm" title="Try another layout" onClick={() => s.shuffleSection(id)}>
                     ↻
                   </button>
+                  <button className="btn ghost sm" title="See other layouts for these photos" onClick={() => setAlts(id)}>
+                    Options
+                  </button>
+                  <button className={`btn ghost sm ${sec.pinned ? 'pinned' : ''}`} title="Keep this layout when regenerating" onClick={() => s.togglePin(id)}>
+                    {sec.pinned ? 'Pinned' : 'Pin'}
+                  </button>
                   <button className="btn ghost icon sm" title="Remove" onClick={() => s.removeSection(id)}>
                     ×
                   </button>
@@ -204,6 +288,7 @@ export function ComposeView() {
         />
       </div>
 
+      {alts && <Alternatives sectionId={alts} onClose={() => setAlts(null)} />}
       <div className="dock">
         {sel ? (
           <>
@@ -253,6 +338,13 @@ export function ComposeView() {
                 </button>
               </>
             )}
+            <button
+              className={`btn sm ${swapFrom ? 'primary' : 'ghost'}`}
+              title="Then tap any other photo, in any layout, to trade places"
+              onClick={() => setSwapFrom(swapFrom ? null : { sectionId: sel.sec.id, itemId: sel.it.id })}
+            >
+              {swapFrom ? 'Tap a photo…' : 'Swap with…'}
+            </button>
             <button className="btn sm ghost" onClick={() => s.removeItem(sel.sec.id, sel.it.id)}>
               Remove
             </button>
