@@ -1,0 +1,258 @@
+// Classic image metrics on a small copy of each photo. Pure pixel math, no models, no DOM,
+// so it runs in a worker and can be tested directly.
+
+export interface TechResult {
+  id: string;
+  /** Coarse 8×8 Lab layout plus a color histogram: a cheap "what does this look like" fingerprint. */
+  grid: number[];
+  hist: number[];
+  sharpness: number;
+  exposure: number;
+  contrast: number;
+  colorfulness: number;
+  lab: [number, number, number];
+  palette: string[];
+  hash: string;
+  flatness: number;
+  coverage: number;
+  /** Degrees the scene's horizon/verticals are rotated (y-down), and how sure we are (0..1). */
+  tilt: number;
+  tiltConfidence: number;
+  notes: string[];
+}
+
+export function analyze(img: { data: Uint8ClampedArray; width: number; height: number }): Omit<TechResult, 'id'> {
+  const { data, width: w, height: h } = img;
+  const n = w * h;
+  const lum = new Float32Array(n);
+  const hist = new Uint32Array(256);
+  let rgSum = 0, ybSum = 0, rgSq = 0, ybSq = 0, flat = 0;
+  let L = 0, A = 0, B = 0;
+  const bins = new Map<number, number>();
+  const grid = new Float64Array(8 * 8 * 4);
+  const colorHist = new Float64Array(64);
+
+  for (let i = 0; i < n; i++) {
+    const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    lum[i] = y;
+    hist[Math.min(255, Math.round(y))]++;
+    const rg = r - g, yb = 0.5 * (r + g) - b;
+    rgSum += rg; ybSum += yb; rgSq += rg * rg; ybSq += yb * yb;
+    if (i > 0 && r === data[i * 4 - 4] && g === data[i * 4 - 3] && b === data[i * 4 - 2]) flat++;
+    const [l, a, bb] = rgbToLab(r, g, b);
+    L += l; A += a; B += bb;
+    const cell = (Math.min(7, Math.floor(((i / w) | 0) * 8 / h)) * 8 + Math.min(7, Math.floor((i % w) * 8 / w))) * 4;
+    grid[cell] += l; grid[cell + 1] += a; grid[cell + 2] += bb; grid[cell + 3]++;
+    colorHist[((r >> 6) << 4) | ((g >> 6) << 2) | (b >> 6)]++;
+    const key = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5);
+    bins.set(key, (bins.get(key) ?? 0) + 1);
+  }
+
+  // Sharpness: Laplacian variance per tile, keep the sharpest tiles, so shallow depth of field
+  // with a crisp subject still counts as sharp.
+  const T = 4, tw = Math.floor(w / T), th = Math.floor(h / T);
+  const tileVar: number[] = [];
+  for (let ty = 0; ty < T; ty++)
+    for (let tx = 0; tx < T; tx++) {
+      let s = 0, sq = 0, k = 0;
+      for (let y = Math.max(1, ty * th); y < Math.min(h - 1, (ty + 1) * th); y++)
+        for (let x = Math.max(1, tx * tw); x < Math.min(w - 1, (tx + 1) * tw); x++) {
+          const i = y * w + x;
+          const v = 4 * lum[i] - lum[i - 1] - lum[i + 1] - lum[i - w] - lum[i + w];
+          s += v; sq += v * v; k++;
+        }
+      if (k) tileVar.push(sq / k - (s / k) ** 2);
+    }
+  tileVar.sort((a, b) => b - a);
+  const peak = (tileVar[0] + (tileVar[1] ?? tileVar[0])) / 2;
+  const sharpness = clamp01((Math.log10(peak + 1) - 1.3) / 1.3);
+
+  let mean = 0;
+  for (let i = 0; i < 256; i++) mean += i * hist[i];
+  mean /= n;
+  let varL = 0;
+  for (let i = 0; i < 256; i++) varL += hist[i] * (i - mean) ** 2;
+  const contrast = clamp01(Math.sqrt(varL / n) / 70);
+  let hi = 0, lo = 0;
+  for (let i = 250; i < 256; i++) hi += hist[i];
+  for (let i = 0; i < 4; i++) lo += hist[i];
+  hi /= n; lo /= n;
+  const notes: string[] = [];
+  let exposure = 1;
+  if (hi > 0.06) { exposure -= Math.min(0.6, (hi - 0.06) * 4); notes.push('Blown highlights'); }
+  // Deep shadows are often intentional (low-key, moody), so they cost less.
+  if (lo > 0.35) { exposure -= Math.min(0.4, (lo - 0.35) * 1.5); notes.push('Crushed shadows'); }
+  if (mean > 225) { exposure -= 0.3; notes.push('Overexposed'); }
+  if (mean < 22) { exposure -= 0.3; notes.push('Very dark'); }
+
+  const rgM = rgSum / n, ybM = ybSum / n;
+  const std = Math.sqrt(Math.max(0, rgSq / n - rgM * rgM) + Math.max(0, ybSq / n - ybM * ybM));
+  const colorfulness = clamp01((std + 0.3 * Math.hypot(rgM, ybM)) / 110);
+
+  const ranked = [...bins.entries()].sort((a, b) => b[1] - a[1]);
+  // Share of pixels in the 3 most common coarse colors: very high for UI and graphics.
+  const coverage = ranked.slice(0, 3).reduce((s, [, c]) => s + c, 0) / n;
+  const palette = ranked
+    .slice(0, 5)
+    .map(([k]) => {
+      const r = ((k >> 6) & 7) * 32 + 16, g = ((k >> 3) & 7) * 32 + 16, b = (k & 7) * 32 + 16;
+      return '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+    });
+
+  return {
+    sharpness,
+    exposure: clamp01(exposure),
+    contrast,
+    colorfulness,
+    lab: [L / n, A / n, B / n],
+    palette,
+    hash: dhash(lum, w, h),
+    grid: Array.from({ length: 64 }, (_, c) => {
+      const k = Math.max(1, grid[c * 4 + 3]);
+      return [grid[c * 4] / k, grid[c * 4 + 1] / k, grid[c * 4 + 2] / k];
+    }).flat().map((v) => Math.round(v * 10) / 10),
+    hist: Array.from(colorHist, (v) => Math.round(Math.sqrt(v / n) * 1000) / 1000),
+    ...estimateTilt(lum, w, h),
+    flatness: flat / n,
+    coverage,
+    notes,
+  };
+}
+
+/**
+ * Tilt from long straight lines (Hough transform). Each strong edge pixel votes for lines through
+ * it near its own direction; real straight structures (horizon, buildings, door frames, table
+ * edges) pile up votes, while textures like grass, fur or fabric don't. The dominant line angles,
+ * weighted by length, give the camera roll. Near-vertical lines count a little less, because
+ * looking up or down makes them converge (keystoning).
+ */
+export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { lines?: unknown[]; edges?: number; thresh?: number }) {
+  const RANGE = 30, STEP = 0.25, NT = Math.round((2 * RANGE) / STEP) + 1;
+  const D = Math.ceil(Math.hypot(w, h)), RB = 2, NR = Math.ceil((2 * D) / RB) + 1;
+  const accH = new Float32Array(NT * NR), accV = new Float32Array(NT * NR);
+  const cosT = new Float64Array(NT), sinT = new Float64Array(NT);
+  for (let t = 0; t < NT; t++) {
+    const a = ((-RANGE + t * STEP) * Math.PI) / 180;
+    cosT[t] = Math.cos(a);
+    sinT[t] = Math.sin(a);
+  }
+  const gxs = new Float32Array(w * h), gys = new Float32Array(w * h), mags: number[] = [];
+  for (let y = 1; y < h - 1; y++)
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      gxs[i] = lum[i - w + 1] + 2 * lum[i + 1] + lum[i + w + 1] - lum[i - w - 1] - 2 * lum[i - 1] - lum[i + w - 1];
+      gys[i] = lum[i + w - 1] + 2 * lum[i + w] + lum[i + w + 1] - lum[i - w - 1] - 2 * lum[i - w] - lum[i - w + 1];
+      if ((x * 7 + y) % 5 === 0) mags.push(Math.hypot(gxs[i], gys[i]));
+    }
+  mags.sort((a, b) => a - b);
+  const thresh = Math.max(40, mags[Math.floor(mags.length * 0.8)] ?? 40);
+  const cx = w / 2, cy = h / 2;
+  for (let y = 2; y < h - 2; y++)
+    for (let x = 2; x < w - 2; x++) {
+      const i = y * w + x;
+      const m = Math.hypot(gxs[i], gys[i]);
+      if (m < thresh) continue;
+      // Thin edges: keep only local maxima across the edge.
+      const ux = Math.round(gxs[i] / m), uy = Math.round(gys[i] / m);
+      const j = i + uy * w + ux, k = i - uy * w - ux;
+      if (Math.hypot(gxs[j], gys[j]) > m || Math.hypot(gxs[k], gys[k]) > m) continue;
+      let e = (Math.atan2(gys[i], gxs[i]) * 180) / Math.PI - 90;
+      while (e <= -90) e += 180;
+      while (e > 90) e -= 180;
+      const vertical = Math.abs(e) > 90 - RANGE;
+      if (!vertical && Math.abs(e) > RANGE) continue;
+      const dev = vertical ? e - Math.sign(e) * 90 : e;
+      const acc = vertical ? accV : accH;
+      const t0 = Math.max(0, Math.round((dev - 3 + RANGE) / STEP)), t1 = Math.min(NT - 1, Math.round((dev + 3 + RANGE) / STEP));
+      const px = x - cx, py = y - cy;
+      for (let t = t0; t <= t1; t++) {
+        // Distance of the line from the center: horizontal family has normal (-sin, cos);
+        // vertical family is the same lines turned 90°.
+        const r = vertical ? px * cosT[t] + py * sinT[t] : -px * sinT[t] + py * cosT[t];
+        acc[t * NR + Math.round((r + D) / RB)] += 1;
+      }
+    }
+  // Peaks = lines; votes ≈ length in pixels.
+  type Line = { dev: number; len: number; vertical: boolean; offset: number };
+  const lines: Line[] = [];
+  const minLen = Math.max(30, Math.min(w, h) * 0.1);
+  for (const [acc, vertical] of [[accH, false], [accV, true]] as const) {
+    for (let t = 1; t < NT - 1; t++)
+      for (let r = 1; r < NR - 1; r++) {
+        const v = acc[t * NR + r];
+        if (v < minLen) continue;
+        let isMax = true;
+        for (let dt = -2; dt <= 2 && isMax; dt++)
+          for (let dr = -2; dr <= 2; dr++) {
+            const tt = t + dt, rr = r + dr;
+            if ((dt || dr) && tt >= 0 && tt < NT && rr >= 0 && rr < NR && acc[tt * NR + rr] > v) { isMax = false; break; }
+          }
+        if (isMax) lines.push({ dev: -RANGE + t * STEP, len: v, vertical, offset: r * RB - D });
+      }
+  }
+  lines.sort((a, b) => b.len - a.len);
+  if (debug) Object.assign(debug, { lines: lines.slice(0, 12), thresh });
+  if (!lines.length) return { tilt: 0, tiltConfidence: 0 };
+  const top = lines.slice(0, 24);
+  // Vertical lines far from the center are the most distorted by keystoning.
+  const weight = (l: Line) => l.len * l.len * (l.vertical ? 0.7 * (1 - Math.min(0.6, Math.abs(l.offset) / w)) : 1);
+  // Weighted mode: the angle most of the long-line length agrees on (±0.75°).
+  let best = 0, bestW = -1;
+  for (const c of top) {
+    const s = top.reduce((acc, l) => acc + (Math.abs(l.dev - c.dev) <= 0.75 ? weight(l) : 0), 0);
+    if (s > bestW) [best, bestW] = [c.dev, s];
+  }
+  const agree = top.filter((l) => Math.abs(l.dev - best) <= 0.75);
+  const tilt = agree.reduce((a, l) => a + l.dev * weight(l), 0) / agree.reduce((a, l) => a + weight(l), 0);
+  const total = top.reduce((a, l) => a + weight(l), 0);
+  // Sure when the long lines agree with each other, and there's real line length behind the answer.
+  const agreement = bestW / total;
+  const agreeLen = agree.reduce((a, l) => a + l.len, 0);
+  const support = Math.min(1, agreeLen / (0.45 * (w + h)));
+  // Several separate lines agreeing is much stronger evidence than one long edge.
+  const corroboration = Math.min(1, 0.55 + 0.15 * (agree.length - 1));
+  const hasV = agree.some((l) => l.vertical), hasH = agree.some((l) => !l.vertical);
+  // Horizon + verticals agreeing is the best evidence; verticals alone can lean from keystoning.
+  const both = hasV && hasH ? 1.2 : hasV ? 0.8 : 1;
+  return { tilt, tiltConfidence: Math.min(1, agreement * support * corroboration * both * 1.3) };
+}
+
+/** 64-bit difference hash, as hex, for near-duplicate detection. */
+function dhash(lum: Float32Array, w: number, h: number) {
+  const g = new Float32Array(72);
+  for (let y = 0; y < 8; y++)
+    for (let x = 0; x < 9; x++) {
+      let s = 0, k = 0;
+      for (let yy = Math.floor((y * h) / 8); yy < Math.floor(((y + 1) * h) / 8); yy++)
+        for (let xx = Math.floor((x * w) / 9); xx < Math.floor(((x + 1) * w) / 9); xx++) {
+          s += lum[yy * w + xx];
+          k++;
+        }
+      g[y * 9 + x] = s / Math.max(1, k);
+    }
+  let out = '';
+  for (let y = 0; y < 8; y++) {
+    let nib = 0;
+    for (let x = 0; x < 8; x++) {
+      nib = (nib << 1) | (g[y * 9 + x] < g[y * 9 + x + 1] ? 1 : 0);
+      if (x % 4 === 3) {
+        out += nib.toString(16);
+        nib = 0;
+      }
+    }
+  }
+  return out;
+}
+
+function rgbToLab(r: number, g: number, b: number): [number, number, number] {
+  const lin = (v: number) => ((v /= 255) <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  const R = lin(r), G = lin(g), B = lin(b);
+  const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+  const x = f((0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047);
+  const y = f(0.2126 * R + 0.7152 * G + 0.0722 * B);
+  const z = f((0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883);
+  return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+}
+
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));

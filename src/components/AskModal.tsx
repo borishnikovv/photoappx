@@ -4,7 +4,7 @@ import { innerScale } from '../lib/straighten';
 import type { Photo } from '../types';
 
 /** The thumbnail rotated and cropped the way straightening would, as a cheap preview. */
-function Leveled({ p, angle }: { p: Photo; angle: number }) {
+export function Leveled({ p, angle }: { p: Photo; angle: number }) {
   const rad = (-angle * Math.PI) / 180;
   const s = innerScale(p.width, p.height, rad);
   return (
@@ -18,7 +18,10 @@ export function AskModal({ onDone }: { onDone: () => void }) {
   const { decisions, byId, resolve, setAskOpen } = useStore();
   const [total] = useState(decisions.length);
   const [busy, setBusy] = useState(false);
-  const d = decisions[0];
+  // Similar-shot questions one at a time, then every tilt question together on one screen.
+  const d = decisions.find((x) => x.kind === 'pick') ?? decisions[0];
+  const tilts = decisions.filter((x): x is Extract<typeof x, { kind: 'straighten' }> => x.kind === 'straighten');
+  const [off, setOff] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!d) onDone();
@@ -34,6 +37,11 @@ export function AskModal({ onDone }: { onDone: () => void }) {
     for (const x of useStore.getState().decisions) await resolve(x.id, x.kind === 'pick' ? x.suggested : false);
   };
   const step = total - decisions.length + 1;
+  const applyTilts = async () => {
+    setBusy(true);
+    for (const t of tilts) await resolve(t.id, !off.has(t.id));
+    setBusy(false);
+  };
 
   return (
     <div className="modal ask">
@@ -60,6 +68,47 @@ export function AskModal({ onDone }: { onDone: () => void }) {
               })}
             </div>
           </>
+        ) : tilts.length > 1 ? (
+          <>
+            <h2>Straighten these?</h2>
+            <p className="dim">
+              These look off level. Tap any you'd rather keep as shot (a deliberate angle, say), then apply.
+            </p>
+            <div className="ask-options n3">
+              {tilts.map((t) => {
+                const p = byId.get(t.photoId)!;
+                const on = !off.has(t.id);
+                return (
+                  <button
+                    key={t.id}
+                    disabled={busy}
+                    aria-pressed={on}
+                    className={on ? 'on' : 'off'}
+                    onClick={() =>
+                      setOff((o) => {
+                        const x = new Set(o);
+                        if (x.has(t.id)) x.delete(t.id);
+                        else x.add(t.id);
+                        return x;
+                      })
+                    }
+                  >
+                    {on ? <Leveled p={p} angle={t.angle} /> : <img src={p.thumb} alt="" />}
+                    <span className="mono">{on ? `Straighten ${Math.abs(t.angle).toFixed(1)}°` : 'Keep as shot'}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="ask-foot">
+              <span style={{ flex: 1 }} />
+              <button className="btn ghost sm" onClick={() => setAskOpen(false)}>
+                Later
+              </button>
+              <button className="btn sm primary" disabled={busy} onClick={applyTilts}>
+                {busy ? 'Straightening…' : `Apply (${tilts.length - off.size} straightened)`}
+              </button>
+            </div>
+          </>
         ) : (
           <>
             <h2>Straighten this one?</h2>
@@ -76,18 +125,20 @@ export function AskModal({ onDone }: { onDone: () => void }) {
             </div>
           </>
         )}
-        <div className="ask-foot">
-          <button className="btn ghost sm" disabled={busy} onClick={() => choose(d.kind === 'pick' ? d.suggested : false)}>
-            {d.kind === 'pick' ? 'Use my pick' : 'Leave as shot'}
-          </button>
-          <span style={{ flex: 1 }} />
-          <button className="btn ghost sm" disabled={busy} onClick={skipAll}>
-            Use my picks for the rest
-          </button>
-          <button className="btn ghost sm" onClick={() => setAskOpen(false)}>
-            Later
-          </button>
-        </div>
+        {!(d.kind === 'straighten' && tilts.length > 1) && (
+          <div className="ask-foot">
+            <button className="btn ghost sm" disabled={busy} onClick={() => choose(d.kind === 'pick' ? d.suggested : false)}>
+              {d.kind === 'pick' ? 'Use my pick' : 'Leave as shot'}
+            </button>
+            <span style={{ flex: 1 }} />
+            <button className="btn ghost sm" disabled={busy} onClick={skipAll}>
+              Use my picks for the rest
+            </button>
+            <button className="btn ghost sm" onClick={() => setAskOpen(false)}>
+              Later
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

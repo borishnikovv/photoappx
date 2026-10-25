@@ -1,9 +1,9 @@
 import { create } from 'zustand';
 import type { Carousel, Decision, Item, Photo, Section, StyleOptions } from './types';
 import { VARIANTS, addBridges, compatibleTemplates, generateCarousel, rebuildSection, templateById } from './lib/layout';
-import { analyzeAll, buildDecisions, curate, groupDuplicates, tiltVerdict, type Progress, type Sequence } from './lib/curate';
+import { analyzeAll, buildDecisions, curate, distance, sameSceneFor, groupDuplicates, tiltVerdict, type Progress, type Sequence } from './lib/curate';
 import { fitBox, photoOrientation } from './lib/geometry';
-import { level, unstraighten } from './lib/straighten';
+import { level, straighten, unstraighten } from './lib/straighten';
 
 export type Step = 'import' | 'curate' | 'compose' | 'export';
 
@@ -48,7 +48,8 @@ interface State {
   reset: () => void;
   setAskOpen: (open: boolean) => void;
   resolve: (id: string, choice: string | boolean) => Promise<void>;
-  setStraight: (photoId: string, on: boolean) => Promise<void>;
+  /** on/off uses the detected tilt; a number sets the correction by hand (0 = as shot). */
+  setStraight: (photoId: string, on: boolean | number) => Promise<void>;
 }
 
 const defaultStyle: StyleOptions = {
@@ -73,9 +74,21 @@ export const useStore = create<State>((set, get) => {
     const { photos, picks, byId } = get();
     const used = new Set(c.sections.flatMap((s) => s.items.map((i) => i.photoId)));
     const leftover = picks.filter((id) => !used.has(id)).map((id) => byId.get(id)!);
-    const extra = photos
+    const extra: Photo[] = [];
+    const kept = [...used].map((id) => byId.get(id)?.analysis).filter((a) => a?.grid);
+    const candidates = photos
       .filter((p) => !used.has(p.id) && !picks.includes(p.id) && p.analysis && !p.analysis.reject && p.analysis.groupBest !== false)
+      // Seam photos are never asked about, so skip any that might still be crooked.
+      .filter((p) => p.straightened != null || !tiltVerdict(p.analysis))
       .sort((a, b) => b.analysis!.score - a.analysis!.score);
+    // …and only ones that add something new: not a near-repeat of anything in the carousel or pool.
+    const sameScene = sameSceneFor(photos.filter((p) => p.analysis?.grid && !p.analysis.reject).map((p) => p.analysis!));
+    for (const p of candidates) {
+      if (kept.every((q) => distance(p.analysis!, q!) > sameScene)) {
+        extra.push(p);
+        kept.push(p.analysis);
+      }
+    }
     return [...leftover, ...extra];
   };
 
@@ -153,6 +166,11 @@ export const useStore = create<State>((set, get) => {
     setStraight: async (photoId, on) => {
       const p = get().byId.get(photoId);
       if (!p) return;
+      if (typeof on === 'number') {
+        replacePhoto(photoId, Math.abs(on) < 0.05 ? unstraighten(p) : await straighten(p, on));
+        set((s) => ({ decisions: s.decisions.filter((d) => !(d.kind === 'straighten' && d.photoId === photoId)) }));
+        return;
+      }
       if (on && p.analysis?.tilt) replacePhoto(photoId, await level(p, p.analysis.tilt));
       if (!on) replacePhoto(photoId, unstraighten(p));
     },

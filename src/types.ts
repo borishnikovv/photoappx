@@ -20,6 +20,9 @@ export interface Analysis {
   /** Hex swatches, dominant first. */
   palette: string[];
   hash: string;
+  /** Appearance fingerprint: 8×8 Lab layout and a sqrt color histogram (see metrics.ts). */
+  grid: number[];
+  hist: number[];
   /** CLIP image embedding, when the vision model is available. */
   embedding?: Float32Array;
   aesthetic?: number;

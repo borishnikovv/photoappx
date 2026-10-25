@@ -136,7 +136,8 @@ function score(p: Photo, t: TechResult, c: ClipResult | null, faces?: FaceBox[])
   if (t.exposure < 0.45) reject = true;
 
   // Screens and graphics have long runs of identical pixels in very few colors; photos (even skies) don't.
-  const graphic = (t.flatness > 0.4 && t.coverage > 0.75) || /screen ?shot|screen_?record/i.test(p.name);
+  // Strict on purpose: minimal photos (open sky, a plain wall) can be quite flat too.
+  const graphic = (t.flatness > 0.6 && t.coverage > 0.88 && t.colorfulness < 0.35) || /screen ?shot|screen_?record/i.test(p.name);
   if (graphic) { reasons.push('Looks like a screenshot or graphic'); reject = true; }
 
   let faceScore = 0.7;
@@ -174,6 +175,8 @@ function score(p: Photo, t: TechResult, c: ClipResult | null, faces?: FaceBox[])
     lab: t.lab,
     palette: t.palette,
     hash: t.hash,
+    grid: t.grid,
+    hist: t.hist,
     embedding: c?.embedding,
     aesthetic: c?.aesthetic,
     style: c?.style,
@@ -234,18 +237,131 @@ export function groupDuplicates(photos: Photo[]) {
 
 export type Sequence = 'story' | 'color';
 
-/** Chooses the strongest distinct photos and orders them, hero first. */
-export function curate(photos: Photo[], count: number, seq: Sequence): string[] {
-  const pool = photos
-    .filter((p) => p.analysis && !p.analysis.reject && p.analysis.groupBest !== false)
-    .sort((a, b) => b.analysis!.score - a.analysis!.score);
-  const chosen: Photo[] = [];
-  for (const p of pool) {
-    if (chosen.length >= count) break;
-    if (chosen.some((q) => cosine(q.analysis!.embedding, p.analysis!.embedding) > 0.92)) continue;
-    chosen.push(p);
+/**
+ * How different two photos look, roughly 0 (same shot) to 1+ (unrelated): composition and color
+ * from the fingerprint, plus what's in the picture when the art-director model is available.
+ */
+export function distance(a: Analysis, b: Analysis) {
+  let g = 0;
+  for (let i = 0; i < a.grid.length; i += 3)
+    g += Math.abs(a.grid[i] - b.grid[i]) + 0.6 * (Math.abs(a.grid[i + 1] - b.grid[i + 1]) + Math.abs(a.grid[i + 2] - b.grid[i + 2]));
+  g /= (a.grid.length / 3) * 30;
+  let bc = 0;
+  for (let i = 0; i < a.hist.length; i++) bc += a.hist[i] * b.hist[i];
+  const look = 0.65 * g + 0.35 * (1 - Math.min(1, bc));
+  if (!a.embedding || !b.embedding) return look;
+  return 0.45 * look + 0.55 * (1 - cosine(a.embedding, b.embedding)) * 3;
+}
+
+/** Photos closer than this are the same scene seen almost the same way: never picked together. */
+const SAME_SCENE = 0.36;
+
+/**
+ * The "same scene" distance for this album. In a varied album unrelated photos sit far apart, so
+ * the full limit applies; in a very uniform one (one beach, one light all day) everything is
+ * closer, so the limit shrinks with it instead of rejecting most of the album.
+ */
+export function sameSceneFor(analyses: Analysis[]) {
+  const all: number[] = [];
+  const step = Math.max(1, Math.floor(analyses.length / 120));
+  for (let i = 0; i < analyses.length; i += step) for (let j = i + step; j < analyses.length; j += step) all.push(distance(analyses[i], analyses[j]));
+  return all.length ? Math.min(SAME_SCENE, 0.6 * quantile(all, 0.1)) : SAME_SCENE;
+}
+
+const quantile = (xs: number[], q: number) => {
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(q * s.length))] ?? 0;
+};
+
+/**
+ * Splits the album (in time order) into moments: a new moment starts where the look changes
+ * sharply from one photo to the next, or after a long time gap.
+ */
+function moments(cands: Photo[], D: number[][]) {
+  const steps = cands.slice(1).map((_, i) => D[i][i + 1]);
+  // Most consecutive photos belong to the same moment, so the median step is "same moment";
+  // a jump well beyond it is a change of scene.
+  const cut = 2 * quantile(steps, 0.5);
+  // Same idea for time, when the dates are real (shared-album links don't carry any).
+  const gaps = cands.slice(1).map((p, i) => p.date - cands[i].date);
+  const longPause = Math.max(10 * 60_000, 6 * quantile(gaps, 0.5));
+  const out: number[][] = [[0]];
+  for (let i = 1; i < cands.length; i++) {
+    if (gaps[i - 1] > longPause || steps[i - 1] > cut) out.push([]);
+    out[out.length - 1].push(i);
   }
-  return sequence(chosen, seq).map((p) => p.id);
+  return out;
+}
+
+/**
+ * Chooses strong photos that are all different from each other and represent the whole folder:
+ * every moment of the album contributes its best frame first (spread evenly across the album when
+ * there are more moments than slots); extra slots then go round-robin, one per moment per round,
+ * to frames that still look different from everything chosen. Then orders them, hero first.
+ */
+export function curate(photos: Photo[], count: number, seq: Sequence): string[] {
+  const cands = photos
+    .filter((p) => p.analysis && !p.analysis.reject && p.analysis.groupBest !== false && p.analysis.grid)
+    .sort((a, b) => a.date - b.date);
+  const k = Math.min(count, cands.length);
+  const n = cands.length;
+  if (!n) return [];
+  const D = cands.map((a, i) => cands.map((b, j) => (i === j ? Infinity : j < i ? 0 : distance(a.analysis!, b.analysis!))));
+  for (let i = 0; i < n; i++) for (let j = 0; j < i; j++) D[i][j] = D[j][i];
+  const score = (i: number) => cands[i].analysis!.score;
+  // "Same shot" radius, learned from this album (half the photos have a twin closer than this), but
+  // never so small that near-repeats (a burst, a stereo pair, a slight reframe) count as variety.
+  const sameScene = sameSceneFor(cands.map((p) => p.analysis!));
+  const radius = Math.max(sameScene, quantile(D.map((row) => Math.min(...row)), 0.5));
+  const floor = quantile(cands.map((_, i) => score(i)), 0.25);
+  const chosen: number[] = [];
+  const distinct = (i: number, r = radius) => chosen.every((c) => D[i][c] > r);
+  const byScore = (xs: number[]) => [...xs].sort((a, b) => score(b) - score(a));
+
+  const ms = moments(cands, D).map(byScore);
+  const reps = ms.map((m) => m[0]);
+  if (reps.length >= k) {
+    // More moments than slots: the best moment from each even stretch of the album.
+    for (let s = 0; s < k; s++) {
+      const stretch = byScore(reps.slice(Math.floor((s * reps.length) / k), Math.floor(((s + 1) * reps.length) / k)));
+      const pick = stretch.find((i) => distinct(i)) ?? stretch[0];
+      if (pick != null && !chosen.includes(pick)) chosen.push(pick);
+    }
+  } else {
+    for (const i of byScore(reps)) if (distinct(i)) chosen.push(i);
+    // Seconds, thirds…: bigger moments first within each round, only frames that add something new.
+    const order = ms.map((_, i) => i).sort((a, b) => ms[b].length - ms[a].length);
+    // No moment gets far more than its fair share while others still have something to give.
+    const cap = Math.ceil(k / ms.length) + 1;
+    for (let round = 1; chosen.length < k && round < cap; round++) {
+      let added = 0;
+      for (const mi of order) {
+        if (chosen.length >= k) break;
+        const next = ms[mi].find((i) => !chosen.includes(i) && score(i) >= floor && distinct(i));
+        if (next != null) {
+          chosen.push(next);
+          added++;
+        }
+      }
+      if (!added || round > 50) break;
+    }
+  }
+  // Still short (a small or very repetitive album): relax "different enough" step by step, but never
+  // into near-repeats — fewer photos beats the same scene twice. Least-represented moments first.
+  const momentOf = new Map(ms.flatMap((m, mi) => m.map((i) => [i, mi] as const)));
+  const taken = (i: number) => chosen.filter((c) => momentOf.get(c) === momentOf.get(i)).length;
+  const radii: number[] = [];
+  for (let r = radius * 0.8; r > sameScene; r *= 0.8) radii.push(r);
+  radii.push(sameScene);
+  for (const r of radii) {
+    if (chosen.length >= k) break;
+    const order = cands.map((_, i) => i).sort((a, b) => taken(a) - taken(b) || score(b) - score(a));
+    for (const i of order) {
+      if (chosen.length >= k) break;
+      if (!chosen.includes(i) && distinct(i, r)) chosen.push(i);
+    }
+  }
+  return sequence(chosen.map((i) => cands[i]), seq).map((p) => p.id);
 }
 
 export function sequence(chosen: Photo[], seq: Sequence): Photo[] {
@@ -270,13 +386,16 @@ export function sequence(chosen: Photo[], seq: Sequence): Photo[] {
   return out;
 }
 
-/** Tilt worth fixing: clearly off level, but not so far it's probably a deliberate Dutch angle. */
+/**
+ * Tilt worth fixing: clearly off level → fix; plausible, big (maybe a deliberate Dutch angle, and
+ * straightening crops a lot) or only weakly supported → ask the user.
+ */
 export function tiltVerdict(a?: Analysis): 'fix' | 'ask' | null {
   if (!a?.tilt || a.tiltConfidence == null) return null;
-  const t = Math.abs(a.tilt);
-  if (t < 0.8 || t > 9) return null;
-  if (a.tiltConfidence >= 0.45) return 'fix';
-  if (a.tiltConfidence >= 0.25 && t >= 1.2) return 'ask';
+  const t = Math.abs(a.tilt), c = a.tiltConfidence;
+  if (t < 0.6 || t > 25) return null;
+  if (c >= 0.45 && t <= 12) return 'fix';
+  if (c >= 0.45 || (c >= 0.3 && t >= 1)) return 'ask';
   return null;
 }
 

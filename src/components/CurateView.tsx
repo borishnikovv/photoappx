@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import type { Photo } from '../types';
-import { AskModal } from './AskModal';
+import { AskModal, Leveled } from './AskModal';
 import { tiltVerdict } from '../lib/curate';
 
 type Filter = 'all' | 'picks' | 'out';
@@ -24,14 +24,53 @@ function Detail({ p, picked }: { p: Photo; picked: boolean }) {
   const setStraight = useStore((s) => s.setStraight);
   const [busy, setBusy] = useState(false);
   const a = p.analysis;
-  const level = async (on: boolean) => {
+  const level = async (on: boolean | number) => {
     setBusy(true);
     await setStraight(p.id, on);
     setBusy(false);
+    setTurn(null);
   };
+  // Manual straightening, in degrees clockwise; previewed live on the untouched original.
+  const [turn, setTurn] = useState<number | null>(null);
+  const applied = p.straightened != null ? -p.straightened : 0;
+  const base = p.original ? { ...p, ...p.original } : p;
   return (
     <div className="detail">
-      <img src={p.thumb} alt="" />
+      {turn != null ? (
+        <div style={{ maxHeight: 300, display: 'flex', justifyContent: 'center', background: 'var(--bg-1)', borderRadius: 6, overflow: 'hidden' }}>
+          <div style={{ height: 300, aspectRatio: `${base.width} / ${base.height}`, maxWidth: '100%', position: 'relative' }}>
+            <Leveled p={base} angle={-turn} />
+            <div className="level-grid" />
+          </div>
+        </div>
+      ) : (
+        <img src={p.thumb} alt="" />
+      )}
+      <div className="field" style={{ marginTop: 10, flexWrap: 'wrap' }}>
+        <span className="mono faint">Level</span>
+        <input
+          type="range"
+          min={-15}
+          max={15}
+          step={0.1}
+          value={turn ?? applied}
+          onChange={(e) => setTurn(+e.target.value)}
+          style={{ flex: 1, width: 'auto' }}
+        />
+        <span className="mono" style={{ width: 44, textAlign: 'right' }}>
+          {(turn ?? applied).toFixed(1)}°
+        </span>
+        {turn != null && (
+          <>
+            <button className="btn sm primary" disabled={busy} onClick={() => level(-turn)}>
+              {busy ? '…' : 'Apply'}
+            </button>
+            <button className="btn sm ghost" disabled={busy} onClick={() => setTurn(null)}>
+              Cancel
+            </button>
+          </>
+        )}
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
@@ -178,7 +217,9 @@ export function CurateView() {
               {reviewed
                 ? smartMode === false
                   ? 'Basic mode: the art-director model could not load, so picks use focus, light, faces and duplicates only.'
-                  : 'Opening shot first. Drag to reorder, double-click a tile to add or remove.'
+                  : picks.length < count
+                    ? `Only ${picks.length} distinct enough: I skipped near-repeats of the same scene. Opening shot first; drag to reorder.`
+                    : 'One per moment across the whole album, opening shot first. Drag to reorder, double-click a tile to add or remove.'
                 : 'Review the folder to get picks.'}
             </p>
             {reviewed && decisions.length > 0 && (
@@ -226,7 +267,7 @@ export function CurateView() {
           </div>
         )}
 
-        {focused && <Detail p={focused} picked={pickIndex.has(focused.id)} />}
+        {focused && <Detail key={focused.id} p={focused} picked={pickIndex.has(focused.id)} />}
       </aside>
       {reviewed && !analyzing && (
         <div className="mobile-cta">
