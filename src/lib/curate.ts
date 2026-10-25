@@ -43,21 +43,38 @@ function pool<T>(make: () => Worker, size: number) {
 
 let clipWorker: Worker | null = null;
 let clipState: Promise<boolean> | null = null;
+/** Why the art-director model isn't running, in plain words (empty when it is). */
+export let clipProblem = '';
 
 function clip(onModel: (p: number) => void) {
   clipWorker ??= new Worker(new URL('../workers/clip.worker.ts', import.meta.url), { type: 'module' });
   clipState ??= new Promise<boolean>((res) => {
     const w = clipWorker!;
-    const t = setTimeout(() => res(false), 180_000);
+    const fail = (why: string) => {
+      clearTimeout(t);
+      clipProblem = navigator.onLine === false ? "You're offline" : why;
+      res(false);
+    };
+    const t = setTimeout(() => fail('The model took too long to download'), 180_000);
     w.onmessage = (e) => {
       if (e.data.type === 'progress') onModel(e.data.progress);
-      if (e.data.type === 'ready') { clearTimeout(t); res(true); }
-      if (e.data.type === 'error' && !e.data.id) { clearTimeout(t); console.warn('CLIP unavailable', e.data.error); res(false); }
+      if (e.data.type === 'ready') { clearTimeout(t); clipProblem = ''; res(true); }
+      if (e.data.type === 'error' && !e.data.id) {
+        console.warn('CLIP unavailable', e.data.error);
+        fail(/fetch|network|load/i.test(String(e.data.error)) ? "The model couldn't download" : "The model couldn't start on this device");
+      }
     };
-    w.onerror = () => { clearTimeout(t); res(false); };
+    w.onerror = () => fail("The model couldn't start on this device");
     w.postMessage({ type: 'init' });
   });
   return clipState;
+}
+
+/** Forget a failed model load so the next review tries again. */
+export function resetClip() {
+  clipWorker?.terminate();
+  clipWorker = null;
+  clipState = null;
 }
 
 const thumbBlob = (p: Photo) => fetch(p.thumb).then((r) => r.blob());

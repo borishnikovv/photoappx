@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { Carousel, Decision, Item, Photo, Section, StyleOptions } from './types';
 import { VARIANTS, addBridges, fixSlivers, groundFor, recoverSection, compatibleTemplates, generateCarousel, rebuildSection, templateById } from './lib/layout';
-import { analyzeAll, buildDecisions, curate, distance, sameSceneFor, groupDuplicates, keystoneVerdict, tiltVerdict, type Progress, type Sequence } from './lib/curate';
+import { analyzeAll, resetClip, buildDecisions, curate, distance, sameSceneFor, groupDuplicates, keystoneVerdict, tiltVerdict, type Progress, type Sequence } from './lib/curate';
 import { fitBox, photoOrientation } from './lib/geometry';
 import { level, straighten, unstraighten } from './lib/straighten';
 import { loadProject, type Draft } from './lib/projects';
@@ -41,6 +41,8 @@ interface State {
   addPhotos: (ps: Photo[], name?: string) => void;
   setImporting: (p: State['importing']) => void;
   analyze: () => Promise<void>;
+  /** Basic mode → try loading the art-director model again and re-review with it. */
+  retryModel: () => Promise<void>;
   autoPick: () => void;
   togglePick: (id: string) => void;
   movePick: (id: string, to: number) => void;
@@ -284,6 +286,13 @@ export const useStore = create<State>((set, get) => {
       set({ analyzing: null });
       get().autoPick();
       if (get().decisions.length) set({ askOpen: true });
+    },
+    retryModel: async () => {
+      resetClip();
+      // Re-review from scratch: the model changes scores, so picks and duplicate groups are redone.
+      for (const p of get().photos) p.analysis = undefined;
+      set((s) => ({ smartMode: null, decisions: [], answered: [], photos: [...s.photos] }));
+      await get().analyze();
     },
     autoPick: () => {
       const { photos, count, seq } = get();

@@ -328,3 +328,9 @@ input[type='range'] { accent-color: var(--fg); width: 120px; }
 .pop-row { display: flex; align-items: center; gap: 4px; }
 .pop-main { flex: 1; display: flex; justify-content: space-between; gap: 8px; background: none; border: 0; color: inherit; padding: 7px 8px; border-radius: 8px; cursor: pointer; font-size: 13px; text-align: left; }
 .pop-main:hover { background: var(--bg-2, #1a1a1a); }
+
+/* Art-director model status */
+.model-status { display: flex; align-items: center; gap: 10px; font-size: 12px; margin-bottom: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.model-status .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--good, #6fcf8e); }
+.model-status.off .dot { background: var(--warn, #e0b25b); }
+.model-status.on { border-color: transparent; padding: 0; color: var(--fg-2); }

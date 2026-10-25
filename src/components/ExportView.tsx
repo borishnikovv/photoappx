@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store';
-import { canShareFiles, downloadZip, renderSlides, shareSlides } from '../lib/exporter';
+import { canShareFiles, downloadBlob, downloadZip, renderPanorama, renderSlides, shareSlides } from '../lib/exporter';
 
 export function ExportView() {
   const { carousels, active, byId, style, setStep } = useStore();
@@ -36,7 +36,7 @@ export function ExportView() {
       </div>
       <h2>{ready ? `${slides.length} slides, ready to post` : 'Rendering at full resolution…'}</h2>
       <p className="dim" style={{ margin: 0 }}>
-        1080 × 1350 · 4:5 · JPEG. Post them in order as one carousel and the seams line up.
+        1080 × 1350 · 4:5 · JPEG, lightly sharpened for Instagram. Post them in order as one carousel and the seams line up.
       </p>
       {!ready && (
         <div className="progress" style={{ maxWidth: 360, marginTop: 20 }}>
@@ -55,6 +55,14 @@ export function ExportView() {
         )}
         <button className={`btn ${canShareFiles() ? '' : 'primary'}`} disabled={!ready} onClick={() => downloadZip(slides, `seam-${c.name.toLowerCase()}`)}>
           Download .zip
+        </button>
+        <button
+          className="btn"
+          disabled={!ready}
+          title="All slides as one long image"
+          onClick={async () => downloadBlob(await renderPanorama(slides), `seam-${c.name.toLowerCase()}-panorama.jpg`)}
+        >
+          Panorama
         </button>
         <button className="btn ghost" onClick={() => setStep('compose')}>
           Back to edit

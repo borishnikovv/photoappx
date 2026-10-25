@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import type { Photo } from '../types';
 import { AskModal } from './AskModal';
 import { previewLevel } from '../lib/straighten';
-import { tiltVerdict } from '../lib/curate';
+import { clipProblem, tiltVerdict } from '../lib/curate';
 
 type Filter = 'all' | 'picks' | 'out';
 
@@ -138,7 +138,7 @@ function Detail({ p, picked }: { p: Photo; picked: boolean }) {
 }
 
 export function CurateView() {
-  const { arrange, arranging, photos, picks, analyzing, smartMode, count, setCount, seq, setSeq, togglePick, movePick, analyze, autoPick, decisions, askOpen, setAskOpen } =
+  const { arrange, arranging, photos, picks, analyzing, smartMode, count, setCount, seq, setSeq, togglePick, movePick, analyze, autoPick, decisions, askOpen, setAskOpen, retryModel } =
     useStore();
   const [composeAfter, setComposeAfter] = useState(false);
   // Open questions get answered before composing; the user can still defer them.
@@ -235,13 +235,31 @@ export function CurateView() {
             <h3>{reviewed ? `${picks.length} picks` : 'Not reviewed'}</h3>
             <p className="dim" style={{ margin: '6px 0 12px', fontSize: 13 }}>
               {reviewed
-                ? smartMode === false
-                  ? 'Basic mode: the art-director model could not load, so picks use focus, light, faces and duplicates only.'
-                  : picks.length < count
+                ? picks.length < count
                     ? `Only ${picks.length} distinct enough: I skipped near-repeats of the same scene. Opening shot first; drag to reorder.`
                     : 'One per moment across the whole album, opening shot first. Drag to reorder, double-click a tile to add or remove.'
                 : 'Review the folder to get picks.'}
             </p>
+            {reviewed && smartMode != null && (
+              <div className={`model-status ${smartMode ? 'on' : 'off'}`}>
+                <span className="dot" />
+                <span style={{ flex: 1 }}>
+                  {smartMode ? (
+                    'Art director on'
+                  ) : (
+                    <>
+                      Basic mode · {clipProblem || "The model couldn't load"}
+                      <span className="faint"> — picks use focus, light, faces and duplicates only.</span>
+                    </>
+                  )}
+                </span>
+                {!smartMode && (
+                  <button className="btn sm" onClick={retryModel}>
+                    Retry
+                  </button>
+                )}
+              </div>
+            )}
             {reviewed && decisions.length > 0 && (
               <div className="ask-banner" style={{ marginBottom: 12 }}>
                 <span style={{ flex: 1 }}>
