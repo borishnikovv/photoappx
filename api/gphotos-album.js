@@ -47,10 +47,27 @@ export function parseAlbum(raw) {
   return { title: title.replace(/&#39;/g, "'").replace(/&amp;/g, '&'), photos };
 }
 
+/** The page decoded every way Google might have encoded a URL inside it. */
+function decodings(raw) {
+  const js = unescape(raw);
+  const entities = js
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(+d))
+    .replace(/&amp;/g, '&');
+  let url = entities;
+  for (let i = 0; i < 2; i++) url = url.replace(/%[0-9a-f]{2}/gi, (c) => { try { return decodeURIComponent(c); } catch { return c; } });
+  return [js, entities, url];
+}
+
+const SHARE_RE = /https:\/\/photos\.google\.com\/(?:u\/\d+\/)?share\/[A-Za-z0-9_\-]+(?:\?key=[A-Za-z0-9_\-]+)?/;
+
 /** Short links sometimes answer with a stopover page that forwards by script; find the album URL in it. */
 export function embeddedAlbumUrl(raw) {
-  const m = unescape(raw).match(/https:\/\/photos\.google\.com\/(?:u\/\d+\/)?share\/[A-Za-z0-9_\-]+(?:\?key=[A-Za-z0-9_\-]+)?/);
-  return m?.[0] ?? null;
+  for (const text of decodings(raw)) {
+    const m = text.match(SHARE_RE);
+    if (m) return m[0];
+  }
+  return null;
 }
 
 export default async function handler(req) {
@@ -67,9 +84,11 @@ export default async function handler(req) {
   // Follow redirects one hop at a time so we never request anything outside Google Photos.
   let r, html = '';
   for (let hop = 0; ; hop++) {
-    r = await fetch(u, { redirect: 'manual', headers: HEADERS });
+    // Google's short-link service gives simple clients a plain redirect but browsers a forwarding page.
+    const short = u.hostname !== 'photos.google.com';
+    r = await fetch(u, { redirect: 'manual', headers: short ? { 'User-Agent': 'curl/8.7.1', Accept: '*/*' } : HEADERS });
     let next = r.status >= 300 && r.status < 400 && r.headers.get('location');
-    if (!next && r.ok && u.hostname !== 'photos.google.com') {
+    if (!next && r.ok && short) {
       // A short-link stopover page rather than the album itself.
       html = await r.text();
       next = embeddedAlbumUrl(html);
@@ -99,12 +118,21 @@ export default async function handler(req) {
       `lh:${(flat.match(/lh\d\.googleusercontent\.com/g) ?? []).length}`,
       `pw:${(flat.match(/googleusercontent\.com\/pw\//g) ?? []).length}`,
       `t:${(flat.match(/<title>([^<]{0,40})/)?.[1] ?? '').trim()}`,
+      `pg:${decodings(html).map((t) => (t.match(/photos\.google\.com/g) ?? []).length).join('/')}`,
+      // A peek at how the page refers to Google Photos (or what it is, if it never does).
+      `s:${(() => {
+        const d = decodings(html)[2];
+        const i = d.search(/photos\.google\.com|share\/|AF1Qip/);
+        return (i < 0 ? d.replace(/\s+/g, ' ').slice(0, 90) : d.slice(Math.max(0, i - 30), i + 70)).replace(/[\n\r]/g, ' ');
+      })()}`,
     ].join(' · ');
     return json(
       {
         error: signIn
           ? 'This album is private. In Google Photos, turn on link sharing for it.'
-          : 'No photos found on that album page. Make sure link sharing is on, then try again.',
+          : u.hostname === 'photos.google.com'
+            ? 'No photos found on that album page. Make sure link sharing is on, then try again.'
+            : 'Google didn’t forward that short link. Open it in your browser, then copy and paste the full photos.google.com/share/… address instead.',
         debug,
       },
       404,
