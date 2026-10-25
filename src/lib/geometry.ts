@@ -1,4 +1,4 @@
-import type { Carousel, Crop, Item, Orientation, Photo } from '../types';
+import type { Carousel, Crop, Item, Orientation, Photo, StyleOptions } from '../types';
 
 export const SLIDE_W = 1080;
 export const SLIDE_H = 1350;
@@ -71,3 +71,6 @@ export function rng(seed: number) {
     return ((s >>> 0) % 1_000_000) / 1_000_000;
   };
 }
+
+/** The carousel's actual background color. */
+export const backgroundOf = (style: StyleOptions, c?: Carousel) => (style.bg === 'auto' ? c?.ground ?? '#0d0d0d' : style.bg);

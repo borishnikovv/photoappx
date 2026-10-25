@@ -6,6 +6,8 @@ export interface TechResult {
   /** Coarse 8×8 Lab layout plus a color histogram: a cheap "what does this look like" fingerprint. */
   grid: number[];
   hist: number[];
+  /** 8×8 busy-ness map (edge detail, 0 calm … 1 busy): where another photo can sit without covering anything. */
+  detail: number[];
   sharpness: number;
   exposure: number;
   contrast: number;
@@ -18,6 +20,8 @@ export interface TechResult {
   /** Degrees the scene's horizon/verticals are rotated (y-down), and how sure we are (0..1). */
   tilt: number;
   tiltConfidence: number;
+  /** What the angle came from: the horizon (most trusted), other long lines, or objects only. */
+  tiltSource: 'horizon' | 'lines' | 'objects' | 'none';
   notes: string[];
 }
 
@@ -113,6 +117,7 @@ export function analyze(img: { data: Uint8ClampedArray; width: number; height: n
       return [grid[c * 4] / k, grid[c * 4 + 1] / k, grid[c * 4 + 2] / k];
     }).flat().map((v) => Math.round(v * 10) / 10),
     hist: Array.from(colorHist, (v) => Math.round(Math.sqrt(v / n) * 1000) / 1000),
+    detail: detailMap(lum, w, h),
     ...estimateTilt(lum, w, h),
     flatness: flat / n,
     coverage,
@@ -192,11 +197,49 @@ export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { 
       }
   }
   lines.sort((a, b) => b.len - a.len);
-  if (debug) Object.assign(debug, { lines: lines.slice(0, 12), thresh });
-  if (!lines.length) return { tilt: 0, tiltConfidence: 0 };
+  if (!lines.length) {
+    if (debug) Object.assign(debug, { lines: [], thresh });
+    return { tilt: 0, tiltConfidence: 0, tiltSource: 'none' as const };
+  }
+
+  // 1. The horizon outranks everything: a long near-horizontal line across most of the frame
+  //    with a clear change above vs. below it (sky/land, land/water). Objects can lean; it can't.
+  const sideMeans = (l: Line) => {
+    const t = ((l.dev * Math.PI) / 180), c = Math.cos(t), sn = Math.sin(t);
+    let up = 0, down = 0, k = 0;
+    for (let x = 4; x < w - 4; x += 4) {
+      const px = x - cx;
+      const y = cy + (l.offset + px * sn) / c;
+      const ya = Math.round(y - 10), yb = Math.round(y + 10);
+      if (ya < 0 || yb >= h) continue;
+      up += lum[ya * w + x];
+      down += lum[yb * w + x];
+      k++;
+    }
+    return k ? { contrast: Math.abs(up - down) / k / 255, coverage: (k * 4) / w } : { contrast: 0, coverage: 0 };
+  };
+  const horizons = lines
+    .filter((l) => !l.vertical && l.len >= 0.4 * w)
+    .map((l) => ({ l, ...sideMeans(l) }))
+    .filter((x) => x.contrast >= 0.06 && x.coverage >= 0.6 && Math.abs(x.l.offset) < 0.4 * h)
+    .sort((a, b) => b.l.len * b.contrast - a.l.len * a.contrast);
+  if (debug) Object.assign(debug, { lines: lines.slice(0, 12), thresh, horizon: horizons[0] });
+  if (horizons.length) {
+    const hz = horizons[0];
+    // Other long horizontals agreeing with it (shorelines, far rooftops) refine the angle.
+    const with_ = lines.filter((l) => !l.vertical && l.len >= 0.2 * w && Math.abs(l.dev - hz.l.dev) <= 0.5);
+    const tilt = with_.reduce((a, l) => a + l.dev * l.len, 0) / with_.reduce((a, l) => a + l.len, 0);
+    const strength = Math.min(1, (hz.l.len / w) * 1.2) * Math.min(1, hz.contrast * 6);
+    return { tilt, tiltConfidence: Math.min(1, 0.35 + 0.65 * strength), tiltSource: 'horizon' as const };
+  }
+
+  // 2. No horizon: long horizontal lines of the landscape lead; verticals (often objects, or
+  //    leaning from keystoning) count far less; short object edges barely count.
   const top = lines.slice(0, 24);
-  // Vertical lines far from the center are the most distorted by keystoning.
-  const weight = (l: Line) => l.len * l.len * (l.vertical ? 0.7 * (1 - Math.min(0.6, Math.abs(l.offset) / w)) : 1);
+  const weight = (l: Line) => {
+    const span = Math.min(1, l.len / (l.vertical ? h : w));
+    return l.len * l.len * span * (l.vertical ? 0.33 * (1 - Math.min(0.6, Math.abs(l.offset) / w)) : 1);
+  };
   // Weighted mode: the angle most of the long-line length agrees on (±0.75°).
   let best = 0, bestW = -1;
   for (const c of top) {
@@ -213,9 +256,28 @@ export function estimateTilt(lum: Float32Array, w: number, h: number, debug?: { 
   // Several separate lines agreeing is much stronger evidence than one long edge.
   const corroboration = Math.min(1, 0.55 + 0.15 * (agree.length - 1));
   const hasV = agree.some((l) => l.vertical), hasH = agree.some((l) => !l.vertical);
-  // Horizon + verticals agreeing is the best evidence; verticals alone can lean from keystoning.
   const both = hasV && hasH ? 1.2 : hasV ? 0.8 : 1;
-  return { tilt, tiltConfidence: Math.min(1, agreement * support * corroboration * both * 1.3) };
+  return {
+    tilt,
+    tiltConfidence: Math.min(1, agreement * support * corroboration * both * 1.3),
+    // Horizontals and verticals agreeing means a whole scene (a street, a room) lines up; anything
+    // less may just be one object's edges.
+    tiltSource: (hasH && hasV ? 'lines' : 'objects') as 'lines' | 'objects',
+  };
+}
+
+/** Mean gradient strength per cell of an 8×8 grid, scaled so ~1 is very busy. Sky, water, fog → ~0. */
+function detailMap(lum: Float32Array, w: number, h: number) {
+  const sum = new Float64Array(64), cnt = new Float64Array(64);
+  for (let y = 1; y < h - 1; y += 2)
+    for (let x = 1; x < w - 1; x += 2) {
+      const i = y * w + x;
+      const g = Math.abs(lum[i + 1] - lum[i - 1]) + Math.abs(lum[i + w] - lum[i - w]);
+      const c = Math.min(7, Math.floor((y * 8) / h)) * 8 + Math.min(7, Math.floor((x * 8) / w));
+      sum[c] += g;
+      cnt[c]++;
+    }
+  return Array.from(sum, (v, c) => Math.round(Math.min(1, v / Math.max(1, cnt[c]) / 40) * 100) / 100);
 }
 
 /** 64-bit difference hash, as hex, for near-duplicate detection. */

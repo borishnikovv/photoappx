@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Carousel, Decision, Item, Photo, Section, StyleOptions } from './types';
-import { VARIANTS, addBridges, compatibleTemplates, generateCarousel, rebuildSection, templateById } from './lib/layout';
+import { VARIANTS, addBridges, fixSlivers, groundFor, compatibleTemplates, generateCarousel, rebuildSection, templateById } from './lib/layout';
 import { analyzeAll, buildDecisions, curate, distance, sameSceneFor, groupDuplicates, tiltVerdict, type Progress, type Sequence } from './lib/curate';
 import { fitBox, photoOrientation } from './lib/geometry';
 import { level, straighten, unstraighten } from './lib/straighten';
@@ -53,9 +53,10 @@ interface State {
 }
 
 const defaultStyle: StyleOptions = {
-  families: { pano: true, layered: true, gallery: true },
-  bg: '#0d0d0d',
+  families: { spread: true, pano: true, layered: true, gallery: true },
+  bg: 'auto',
   frame: '#f4f1ea',
+  overlay: 'clean',
   maxSlides: 20,
 };
 
@@ -191,7 +192,8 @@ export const useStore = create<State>((set, get) => {
     },
     setStyle: (patch) => {
       set((s) => ({ style: { ...s.style, ...patch } }));
-      if (patch.maxSlides && get().carousels.length) get().compose(false);
+      // Changes that affect layout re-run it with the same seed, so the arrangement stays recognisable.
+      if ((patch.maxSlides || patch.overlay || patch.families) && get().carousels.length) get().compose(false);
     },
 
     compose: (reseed) => {
@@ -201,7 +203,7 @@ export const useStore = create<State>((set, get) => {
       set({
         carousels: VARIANTS.map((v, i) => {
           const c = generateCarousel(ps, style, base + i * 7919, v);
-          return addBridges(c, reserveFor(c), byId, base + i);
+          return { ...fixSlivers(addBridges(fixSlivers(c), reserveFor(c), byId, style, base + i)), ground: groundFor(ps) };
         }),
         selected: null,
         step: 'compose',

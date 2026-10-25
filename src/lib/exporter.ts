@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import type { Carousel, Photo, StyleOptions } from '../types';
-import { SLIDE_H, SLIDE_W, absoluteItems, slideCount, sourceRect } from './geometry';
+import { SLIDE_H, SLIDE_W, absoluteItems, backgroundOf, slideCount, sourceRect } from './geometry';
 
 /**
  * Renders each slide at exactly 1080x1350. Photos are decoded once at the resolution they're
@@ -8,6 +8,7 @@ import { SLIDE_H, SLIDE_W, absoluteItems, slideCount, sourceRect } from './geome
  */
 export async function renderSlides(c: Carousel, photos: Map<string, Photo>, o: StyleOptions, onProgress?: (i: number, n: number) => void) {
   const items = absoluteItems(c);
+  const bg = backgroundOf(o, c);
   const n = slideCount(c);
   const lastUse = new Map<string, number>();
   const needW = new Map<string, number>();
@@ -38,7 +39,7 @@ export async function renderSlides(c: Carousel, photos: Map<string, Photo>, o: S
 
   for (let i = 0; i < n; i++) {
     const x0 = i * SLIDE_W;
-    ctx.fillStyle = o.bg;
+    ctx.fillStyle = bg;
     ctx.fillRect(0, 0, SLIDE_W, SLIDE_H);
     for (const it of items) {
       if (it.ax >= x0 + SLIDE_W || it.ax + it.w <= x0) continue;
@@ -51,7 +52,7 @@ export async function renderSlides(c: Carousel, photos: Map<string, Photo>, o: S
         ctx.shadowBlur = 40;
         ctx.shadowOffsetY = 14;
       }
-      ctx.fillStyle = b ? o.frame : o.bg;
+      ctx.fillStyle = b ? o.frame : bg;
       if (b || it.shadow) ctx.fillRect(x - b, y - b, it.w + 2 * b, it.h + 2 * b);
       ctx.restore();
       ctx.drawImage(img, sx * img.width, sy * img.height, sw * img.width, sh * img.height, x, y, it.w, it.h);

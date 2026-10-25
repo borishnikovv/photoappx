@@ -83,7 +83,11 @@ export async function level(p: Photo, tiltDeg: number): Promise<Partial<Photo>> 
   let patch = await straighten(p, angle);
   for (let pass = 0; pass < 3; pass++) {
     const m = await measure(await fetch(patch.thumb!).then((r) => r.blob()));
-    if (!m || Math.abs(m.tilt) < 0.2 || m.tiltConfidence < 0.3 || Math.abs(angle + m.tilt) > 10) break;
+    // Only top up an under-correction measured from the same kind of evidence; a reading that
+    // points the other way, or jumps, means it latched onto something else — stop there.
+    if (!m || Math.abs(m.tilt) < 0.2 || m.tiltConfidence < 0.3) break;
+    if (Math.sign(m.tilt) !== Math.sign(tiltDeg) || Math.abs(m.tilt) > 0.5 * Math.abs(tiltDeg)) break;
+    if (p.analysis?.tiltSource === 'horizon' && m.tiltSource !== 'horizon') break;
     angle += m.tilt;
     URL.revokeObjectURL(patch.thumb!);
     patch = await straighten(p, angle);

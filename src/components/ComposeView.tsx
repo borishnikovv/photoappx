@@ -5,9 +5,10 @@ import { templateById } from '../lib/layout';
 import { SLIDE_H, SLIDE_W, slideCount } from '../lib/geometry';
 import type { Family } from '../types';
 
-const BGS = ['#0d0d0d', '#1a1a1a', '#f4f1ea', '#ffffff', '#e9e4da'];
+const BGS = ['auto', '#ffffff', '#f4f1ea', '#e9e4da', '#1a1a1a', '#0d0d0d'];
 const FRAMES = ['#f4f1ea', '#ffffff', '#0d0d0d'];
 const FAMILIES: { id: Family; label: string }[] = [
+  { id: 'spread', label: 'Spreads' },
   { id: 'pano', label: 'Panoramas' },
   { id: 'layered', label: 'Layered' },
   { id: 'gallery', label: 'Gallery' },
@@ -106,7 +107,6 @@ export function ComposeView() {
   const toggleFamily = (f: Family) => {
     const families = { ...style.families, [f]: !style.families[f] };
     setStyle({ families });
-    setTimeout(() => compose(false));
   };
 
   return (
@@ -133,15 +133,31 @@ export function ComposeView() {
         <div className="field">
           <span className="mono faint">Bg</span>
           {BGS.map((b) => (
-            <button key={b} className="swatch" style={{ background: b }} aria-pressed={style.bg === b} onClick={() => setStyle({ bg: b })} />
+            <button
+              key={b}
+              className={`swatch ${b === 'auto' ? 'auto' : ''}`}
+              title={b === 'auto' ? 'Auto: a tint drawn from your photos' : b}
+              style={{ background: b === 'auto' ? c.ground : b }}
+              aria-pressed={style.bg === b}
+              onClick={() => setStyle({ bg: b })}
+            />
           ))}
         </div>
-        <div className="field">
-          <span className="mono faint">Frame</span>
-          {FRAMES.map((b) => (
-            <button key={b} className="swatch" style={{ background: b }} aria-pressed={style.frame === b} onClick={() => setStyle({ frame: b })} />
-          ))}
+        <div className="seg" title="How photos laid on top of others look">
+          <button aria-pressed={style.overlay === 'clean'} onClick={() => setStyle({ overlay: 'clean' })}>
+            Clean
+          </button>
+          <button aria-pressed={style.overlay === 'framed'} onClick={() => setStyle({ overlay: 'framed' })}>
+            Framed
+          </button>
         </div>
+        {style.overlay === 'framed' && (
+          <div className="field">
+            {FRAMES.map((b) => (
+              <button key={b} className="swatch" style={{ background: b }} aria-pressed={style.frame === b} onClick={() => setStyle({ frame: b })} />
+            ))}
+          </div>
+        )}
         <div className="grow" />
         <div className="field">
           <span className="mono faint">View</span>

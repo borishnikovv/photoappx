@@ -1,5 +1,5 @@
 export type Orientation = 'portrait' | 'square' | 'landscape' | 'pano';
-export type Family = 'pano' | 'layered' | 'gallery';
+export type Family = 'spread' | 'pano' | 'layered' | 'gallery';
 
 export interface FaceBox {
   /** Normalized 0..1 in photo space. */
@@ -23,6 +23,7 @@ export interface Analysis {
   /** Appearance fingerprint: 8×8 Lab layout and a sqrt color histogram (see metrics.ts). */
   grid: number[];
   hist: number[];
+  detail?: number[];
   /** CLIP image embedding, when the vision model is available. */
   embedding?: Float32Array;
   aesthetic?: number;
@@ -36,6 +37,7 @@ export interface Analysis {
   groupBest?: boolean;
   tilt?: number;
   tiltConfidence?: number;
+  tiltSource?: 'horizon' | 'lines' | 'objects' | 'none';
 }
 
 export interface Photo {
@@ -95,11 +97,16 @@ export interface Carousel {
   name: string;
   seed: number;
   sections: Section[];
+  /** Background drawn from the photos, used when the style's background is 'auto'. */
+  ground?: string;
 }
 
 export interface StyleOptions {
   families: Record<Family, boolean>;
+  /** A color, or 'auto' to derive a light/dark ground from the photos' own palette. */
   bg: string;
   frame: string;
+  /** How photos laid on top look: clean edges (no frame, no shadow) or framed like prints. */
+  overlay: 'clean' | 'framed';
   maxSlides: number;
 }

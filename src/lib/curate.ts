@@ -177,6 +177,7 @@ function score(p: Photo, t: TechResult, c: ClipResult | null, faces?: FaceBox[])
     hash: t.hash,
     grid: t.grid,
     hist: t.hist,
+    detail: t.detail,
     embedding: c?.embedding,
     aesthetic: c?.aesthetic,
     style: c?.style,
@@ -184,6 +185,7 @@ function score(p: Photo, t: TechResult, c: ClipResult | null, faces?: FaceBox[])
     score: Math.round(Math.min(1, Math.max(0, s)) * 100 * (reject ? 0.5 : 1)),
     tilt: t.tilt,
     tiltConfidence: t.tiltConfidence,
+    tiltSource: t.tiltSource,
     reject,
     reasons: [...new Set(reasons)],
   };
@@ -317,6 +319,14 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
   const chosen: number[] = [];
   const distinct = (i: number, r = radius) => chosen.every((c) => D[i][c] > r);
   const byScore = (xs: number[]) => [...xs].sort((a, b) => score(b) - score(a));
+  // Keep horizontals and verticals in healthy balance (spreads need both: wide backdrops, tall
+  // frames on top) by nudging toward whichever is under-represented so far.
+  const wide = (i: number) => ['landscape', 'pano'].includes(photoOrientation(cands[i]));
+  const balance = (i: number) => {
+    const nw = chosen.filter(wide).length, nt = chosen.length - nw;
+    return Math.max(-8, Math.min(8, 3 * (wide(i) ? nt - nw : nw - nt)));
+  };
+  const best = (xs: number[]) => xs.reduce<number | undefined>((b, i) => (b == null || score(i) + balance(i) > score(b) + balance(b) ? i : b), undefined);
 
   const ms = moments(cands, D).map(byScore);
   const reps = ms.map((m) => m[0]);
@@ -324,11 +334,12 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
     // More moments than slots: the best moment from each even stretch of the album.
     for (let s = 0; s < k; s++) {
       const stretch = byScore(reps.slice(Math.floor((s * reps.length) / k), Math.floor(((s + 1) * reps.length) / k)));
-      const pick = stretch.find((i) => distinct(i)) ?? stretch[0];
+      const pick = best(stretch.filter((i) => distinct(i))) ?? stretch[0];
       if (pick != null && !chosen.includes(pick)) chosen.push(pick);
     }
   } else {
     for (const i of byScore(reps)) if (distinct(i)) chosen.push(i);
+    // (Every moment's best goes in regardless of orientation; balance steers the seconds.)
     // Seconds, thirds…: bigger moments first within each round, only frames that add something new.
     const order = ms.map((_, i) => i).sort((a, b) => ms[b].length - ms[a].length);
     // No moment gets far more than its fair share while others still have something to give.
@@ -337,7 +348,7 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
       let added = 0;
       for (const mi of order) {
         if (chosen.length >= k) break;
-        const next = ms[mi].find((i) => !chosen.includes(i) && score(i) >= floor && distinct(i));
+        const next = best(ms[mi].filter((i) => !chosen.includes(i) && score(i) >= floor && distinct(i)));
         if (next != null) {
           chosen.push(next);
           added++;
@@ -355,7 +366,7 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
   radii.push(sameScene);
   for (const r of radii) {
     if (chosen.length >= k) break;
-    const order = cands.map((_, i) => i).sort((a, b) => taken(a) - taken(b) || score(b) - score(a));
+    const order = cands.map((_, i) => i).sort((a, b) => taken(a) - taken(b) || score(b) + balance(b) - score(a) - balance(a));
     for (const i of order) {
       if (chosen.length >= k) break;
       if (!chosen.includes(i) && distinct(i, r)) chosen.push(i);
@@ -394,7 +405,10 @@ export function tiltVerdict(a?: Analysis): 'fix' | 'ask' | null {
   if (!a?.tilt || a.tiltConfidence == null) return null;
   const t = Math.abs(a.tilt), c = a.tiltConfidence;
   if (t < 0.6 || t > 25) return null;
-  if (c >= 0.45 && t <= 12) return 'fix';
+  // Only a horizon (or strong, agreeing landscape lines) is trusted to straighten automatically;
+  // angles read from objects might be the object leaning, so those are always asked.
+  if (a.tiltSource === 'horizon' && c >= 0.45 && t <= 12) return 'fix';
+  if (a.tiltSource === 'lines' && c >= 0.6 && t <= 12) return 'fix';
   if (c >= 0.45 || (c >= 0.3 && t >= 1)) return 'ask';
   return null;
 }

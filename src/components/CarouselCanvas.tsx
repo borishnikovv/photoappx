@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Carousel, Item, Photo, StyleOptions } from '../types';
-import { SLIDE_H, SLIDE_W, clamp, slideCount, sourceRect } from '../lib/geometry';
+import { SLIDE_H, SLIDE_W, backgroundOf, clamp, slideCount, sourceRect } from '../lib/geometry';
 import { previewUrl } from '../lib/importer';
 
 export type EditMode = 'frame' | 'photo';
@@ -139,7 +139,7 @@ export function CarouselCanvas({ carousel, photos, style, scale, editable, mode,
   const n = slideCount(carousel);
   let start = 0;
   return (
-    <div className="canvas" style={{ width: n * SLIDE_W * scale, height: SLIDE_H * scale, background: style.bg }} onPointerDown={() => onSelect?.(null)}>
+    <div className="canvas" style={{ width: n * SLIDE_W * scale, height: SLIDE_H * scale, background: backgroundOf(style, carousel) }} onPointerDown={() => onSelect?.(null)}>
       <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
         {carousel.sections.flatMap((sec, si) => {
           const origin = start * SLIDE_W;
