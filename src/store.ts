@@ -62,7 +62,7 @@ interface State {
 }
 
 const defaultStyle: StyleOptions = {
-  families: { spread: true, pano: true, layered: true, gallery: true },
+  families: { mosaic: true, spread: true, pano: true, layered: true, gallery: true },
   bg: 'auto',
   frame: '#f4f1ea',
   overlay: 'clean',

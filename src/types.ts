@@ -1,5 +1,5 @@
 export type Orientation = 'portrait' | 'square' | 'landscape' | 'pano';
-export type Family = 'spread' | 'pano' | 'layered' | 'gallery';
+export type Family = 'mosaic' | 'spread' | 'pano' | 'layered' | 'gallery';
 
 export interface FaceBox {
   /** Normalized 0..1 in photo space. */

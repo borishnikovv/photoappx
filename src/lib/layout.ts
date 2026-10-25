@@ -1,5 +1,5 @@
 import type { Carousel, Family, Item, Orientation, Photo, Section, StyleOptions } from '../types';
-import { distance } from './curate';
+import { closeness, distance } from './curate';
 import { SLIDE_H as H, SLIDE_W as W, fitBox, photoOrientation, rng, sourceRect, uid } from './geometry';
 
 type Spec = Omit<Item, 'id'>;
@@ -415,6 +415,114 @@ export const TEMPLATES: Template[] = [
   },
 ];
 
+// ---- Mosaics: editorial album spreads ----------------------------------------------------------
+// Full-height backdrops tiled side by side (their join deliberately off the slide cut), with a
+// designed group of frames — equal heights, shared top/bottom lines, even gutters — laid right
+// over the join, so it stitches one picture into the next.
+
+type Group = { id: string; label: string; slots: Orientation[][]; cells: (ps: Photo[], r: () => number) => { w: number; h: number; x: number; y: number }[] };
+const GAP = 28;
+/** Cell layouts relative to the group's center (0, 0). */
+const GROUPS: Group[] = [
+  {
+    id: 'one-tall', label: 'frame', slots: [TALL],
+    cells: ([a], r) => { const b = fitBox(Math.min(aspect(a), 0.8), W * 0.62, H * (0.6 + r() * 0.1)); return [{ ...b, x: -b.w / 2, y: -b.h / 2 - H * 0.03 }]; },
+  },
+  {
+    id: 'one-wide', label: 'wide frame', slots: [SQ_WIDE],
+    cells: ([a], r) => { const b = fitBox(frameAspect(a, r), W * 0.95, H * 0.56); return [{ ...b, x: -b.w / 2, y: -b.h / 2 - H * 0.04 }]; },
+  },
+  {
+    id: 'stack', label: 'stacked pair', slots: [SQ_WIDE, SQ_WIDE],
+    cells: ([a, b], r) => {
+      // One high, one low, slightly offset and overlapping — like prints laid on a table.
+      const A = fitBox(frameAspect(a, r), W * 0.8, H * 0.44), B = fitBox(frameAspect(b, r), W * 0.8, H * 0.44);
+      const off = W * 0.04 * (r() > 0.5 ? 1 : -1);
+      return [{ ...A, x: -A.w / 2 - off, y: -H / 2 + 100 }, { ...B, x: -B.w / 2 + off, y: H / 2 - 100 - B.h }];
+    },
+  },
+  {
+    id: 'row-tall', label: 'pair', slots: [TALL, TALL],
+    cells: (_, r) => {
+      // Two tall frames, exactly the same height and top line, an even gutter between.
+      const h = H * (0.6 + r() * 0.08), w = h * (2 / 3);
+      return [{ w, h, x: -w - GAP / 2, y: -h / 2 }, { w, h, x: GAP / 2, y: -h / 2 }];
+    },
+  },
+  {
+    id: 'row-mixed', label: 'portrait + landscape', slots: [TALL, WIDE],
+    cells: () => {
+      // Equal heights: a portrait beside a landscape, sharing top and bottom lines.
+      const h = H * 0.5, pw = h * (2 / 3), lw = h * 1.5;
+      const total = pw + GAP + lw;
+      return [{ w: pw, h, x: -total / 2, y: -h / 2 }, { w: lw, h, x: -total / 2 + pw + GAP, y: -h / 2 }];
+    },
+  },
+  {
+    id: 'grid', label: '2×2 grid', slots: [SQ_WIDE, SQ_WIDE, SQ_WIDE, SQ_WIDE],
+    cells: (_, r) => {
+      const w = W * (0.6 + r() * 0.05), h = w / 1.5;
+      return [0, 1, 2, 3].map((i) => ({ w, h, x: (i % 2 ? GAP / 2 : -w - GAP / 2), y: i < 2 ? -h - GAP / 2 : GAP / 2 }));
+    },
+  },
+];
+
+/** Shifts a group sideways (as little as possible) so none of its frames crosses a cut by a sliver. */
+function settleGroup(cells: { w: number; h: number; x: number; y: number }[], span: number) {
+  const sliverCost = (dx: number) =>
+    cells.reduce((c, b) => {
+      let t = 0;
+      for (let s2 = W; s2 < span * W; s2 += W) {
+        const l = s2 - (b.x + dx), rr = b.x + dx + b.w - s2;
+        if (l > 0 && rr > 0 && Math.min(l, rr) < Math.max(150, 0.22 * b.w)) t += Math.max(150, 0.22 * b.w) - Math.min(l, rr);
+      }
+      const out = Math.max(0, 40 - (b.x + dx)) + Math.max(0, b.x + dx + b.w - (span * W - 40));
+      return c + t + out * 3;
+    }, 0) + Math.abs(dx) * 0.2;
+  let best = 0, bestC = sliverCost(0);
+  for (let dx = -0.4 * W; dx <= 0.4 * W; dx += 10) {
+    const c = sliverCost(dx);
+    if (c < bestC) [best, bestC] = [dx, c];
+  }
+  return cells.map((b) => ({ ...b, x: b.x + best }));
+}
+
+function makeMosaics(): Template[] {
+  const out: Template[] = [];
+  // Where the two backdrops meet, in slides. Never right on a cut: the frames hide the join instead.
+  const joins: Record<number, number[]> = { 2: [0.8, 1.25], 3: [1.35, 1.7] };
+  for (const span of [2, 3])
+    for (const join of joins[span])
+      for (const g of GROUPS) {
+        if (span === 3 && (g.id === 'one-tall' || g.id === 'one-wide')) continue; // too little for 3 slides
+        out.push({
+          id: `mosaic${span}-${g.id}-${Math.round(join * 100)}`,
+          label: `Mosaic · ${g.label}`,
+          family: 'mosaic',
+          span,
+          slots: [ANY, ANY, ...g.slots],
+          weight: g.id === 'grid' ? 0.8 : 1.1,
+          hero: span === 3,
+          rigid: true,
+          build: ([a, b, ...ps], r, o) => {
+            const jx = Math.round(join * W);
+            const center = { x: jx, y: H / 2 };
+            const cells = settleGroup(
+              g.cells(ps, r).map((c) => ({ ...c, x: c.x + center.x, y: c.y + center.y })),
+              span,
+            );
+            return [
+              mk(a, 0, 0, jx, H, { base: true }),
+              mk(b, jx, 0, span * W - jx, H, { base: true }),
+              ...ps.map((p, i) => mk(p, cells[i].x, cells[i].y, cells[i].w, cells[i].h, ov(o, i + 1))),
+            ];
+          },
+        });
+      }
+  return out;
+}
+TEMPLATES.push(...makeMosaics());
+
 export const templateById = (id: string) => TEMPLATES.find((t) => t.id === id)!;
 
 const labDist = (a: Photo, b: Photo) => {
@@ -602,9 +710,12 @@ function protectedBoxes(p: Photo): { x: number; y: number; w: number; h: number;
   const faces = p.analysis?.faces;
   if (faces?.length) return faces.map((f) => ({ ...f, wt: 1 }));
   const d = p.analysis?.detail;
-  if (!d) return [];
+  // No clear subject (detail everywhere, or nowhere): photographers center what matters, so
+  // protect the middle of the frame.
+  const middle = [{ x: 0.32, y: 0.25, w: 0.36, h: 0.5, wt: 0.5 }];
+  if (!d) return middle;
   const max = Math.max(...d);
-  if (max < 0.15) return [];
+  if (max < 0.15) return middle;
   let x0 = 8, x1 = 0, y0 = 8, y1 = 0, n = 0;
   d.forEach((v, i) => {
     if (v < 0.75 * max) return;
@@ -612,7 +723,7 @@ function protectedBoxes(p: Photo): { x: number; y: number; w: number; h: number;
     x0 = Math.min(x0, cx); x1 = Math.max(x1, cx + 1); y0 = Math.min(y0, cy); y1 = Math.max(y1, cy + 1); n++;
   });
   // Detail spread all over (texture, crowds) isn't a single subject.
-  if ((x1 - x0) * (y1 - y0) > 30 || !n) return [];
+  if ((x1 - x0) * (y1 - y0) > 30 || !n) return middle;
   return [{ x: x0 / 8, y: y0 / 8, w: (x1 - x0) / 8, h: (y1 - y0) / 8, wt: 0.6 }];
 }
 
@@ -662,9 +773,9 @@ export interface Emphasis {
 }
 
 export const VARIANTS: Emphasis[] = [
-  { name: 'Spread', boost: { spread: 2.6, layered: 0.9, gallery: 0.5 } },
-  { name: 'Cinematic', boost: { pano: 2.2, spread: 1.4, layered: 1.2, gallery: 0.5 } },
-  { name: 'Gallery', boost: { gallery: 2.2, spread: 0.8, base: 0.5 } },
+  { name: 'Editorial', boost: { mosaic: 3, spread: 1, layered: 0.7, gallery: 0.4, pano: 0.6 } },
+  { name: 'Spread', boost: { spread: 2.6, mosaic: 1.2, layered: 0.9, gallery: 0.5 } },
+  { name: 'Cinematic', boost: { pano: 2.2, spread: 1.4, mosaic: 1, layered: 1.2, gallery: 0.5 } },
 ];
 
 /**
@@ -737,7 +848,40 @@ export function scoreSection(sec: Section, byId: Map<string, Photo>) {
   let color = 0;
   for (const o of ovs) color += bases.length ? Math.min(...bases.map((b) => labDist(byId.get(o.photoId)!, byId.get(b.photoId)!))) / 120 : 0;
   notes.color = Math.min(1, color / Math.max(1, ovs.length));
-  const W8: Record<string, number> = { hidden: 3, overlap: 1.5, crop: 2, small: 1.5, balance: 1, margin: 0.8, aligned: 1, seams: 1, color: 0.8 };
+  // Sliced subjects: a face or the main subject cut in two by a slide edge is the worst look.
+  let sliced = 0;
+  for (const it of items) {
+    const p = byId.get(it.photoId)!;
+    const { sx, sy, sw, sh } = sourceRect(p, it);
+    for (const b of protectedBoxes(p)) {
+      const l = it.x + ((b.x - sx) / sw) * it.w, rr = it.x + ((b.x + b.w - sx) / sw) * it.w;
+      const t = it.y + ((b.y - sy) / sh) * it.h, bt = it.y + ((b.y + b.h - sy) / sh) * it.h;
+      if (bt < 0 || t > H) continue;
+      for (let cut = W; cut < sec.span * W; cut += W)
+        if (l < cut && rr > cut) {
+          const minor = Math.min(cut - l, rr - cut) / Math.max(1, rr - l);
+          if (minor > 0.08) sliced += b.wt * Math.min(1, minor * 2.5);
+        }
+    }
+  }
+  notes.sliced = Math.min(1.5, sliced);
+  // Stitches: where two backdrops meet mid-slide, frames laid over the join read as designed;
+  // a bare join reads as a mistake.
+  const sortedBases = [...bases].sort((a, b) => a.x - b.x);
+  let stitch = 0;
+  for (let i = 1; i < sortedBases.length; i++) {
+    const bx = sortedBases[i].x;
+    if (sortedBases[i].y > 0 || Math.abs(bx % W) < 1) continue; // stacked tiles, or a join on a cut
+    stitch += ovs.some((o) => o.x < bx - 40 && o.x + o.w > bx + 40) ? -0.25 : 0.5;
+  }
+  notes.stitch = stitch;
+  // Scale contrast: details and close-ups make the best backdrops behind wider scenes.
+  if (bases.length && ovs.length) {
+    const avg = (xs: Spec[]) => xs.reduce((t, it) => t + closeness(byId.get(it.photoId)!), 0) / xs.length;
+    const diff = avg(bases) - avg(ovs);
+    notes.scale = diff > 0 ? -Math.min(0.3, diff) : Math.min(0.4, -diff);
+  }
+  const W8: Record<string, number> = { hidden: 3, overlap: 1.5, crop: 2, small: 1.5, balance: 1, margin: 0.8, aligned: 1, seams: 1, color: 0.8, stitch: 1.2, scale: 1, sliced: 5 };
   const penalty = Object.entries(notes).reduce((t, [k, v]) => t + W8[k] * v, 0);
   return { score: Math.max(0, 1 - penalty / 6), notes };
 }
@@ -755,6 +899,7 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
   const byId = new Map(photos.map((p) => [p.id, p]));
   let slides = 0;
   const recent: string[] = [];
+  const recentFamilies: string[] = [];
   const allowed = TEMPLATES.filter((t) => t.family === 'base' || o.families[t.family]);
 
   while (queue.length && slides < o.maxSlides) {
@@ -769,11 +914,13 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
       let w = t.weight * (emph.boost[t.family] ?? 1);
       if (recent[0] === t.id) w *= 0.1;
       else if (recent.includes(t.id)) w *= 0.5;
-      if (sections.length === 0) w *= t.hero ? 2.5 : 0.4;
+      // Keep the rhythm varied: a third section in a row from the same family has to earn it.
+      if (recentFamilies[0] === t.family && recentFamilies[1] === t.family) w *= 0.55;
+      if (sections.length === 0) w *= t.hero ? 1.6 : 0.6;
       // Pace: use photos at the rate that fills the carousel exactly — not faster, not slower.
       const perSlide = ps.length / t.span;
       w *= Math.exp(-1.4 * Math.abs(perSlide - density));
-      for (let k = 0; k < 2; k++) {
+      for (let k = 0; k < (t.family === 'mosaic' ? 1 : 2); k++) {
         const sec = buildSection(t, ps, rng(Math.floor(r() * 1e9)), o);
         const v = scoreSection(sec, byId).score * 3 + Math.log(w) * 0.6 + r() * 0.25;
         if (!best || v > best.v) best = { sec, t, ps, v };
@@ -789,6 +936,8 @@ export function generateCarousel(photos: Photo[], o: StyleOptions, seed: number,
     slides += best.t.span;
     recent.unshift(best.t.id);
     recent.length = Math.min(recent.length, 3);
+    recentFamilies.unshift(best.t.family);
+    recentFamilies.length = Math.min(recentFamilies.length, 2);
   }
   return { id: uid('car'), name: emph.name, seed, sections };
 }

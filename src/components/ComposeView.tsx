@@ -7,6 +7,7 @@ import type { Family } from '../types';
 
 const FRAMES = ['#f4f1ea', '#ffffff', '#0d0d0d'];
 const FAMILIES: { id: Family; label: string }[] = [
+  { id: 'mosaic', label: 'Mosaic' },
   { id: 'spread', label: 'Spreads' },
   { id: 'pano', label: 'Panoramas' },
   { id: 'layered', label: 'Layered' },

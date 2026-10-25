@@ -398,7 +398,7 @@ export function curate(photos: Photo[], count: number, seq: Sequence): string[] 
 }
 
 /** How close the camera is: 0 = wide, scene-setting view … 1 = close-up of a face or detail. */
-function closeness(p: Photo) {
+export function closeness(p: Photo) {
   const a = p.analysis;
   const faceArea = (a?.faces ?? []).reduce((s2, f) => s2 + f.w * f.h, 0);
   const d = a?.detail ?? [];
