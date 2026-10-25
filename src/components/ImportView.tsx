@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useStore } from '../store';
 import { loadFiles } from '../lib/importer';
 import { driveConfigured, pickFromDrive } from '../lib/drive';
+import { fetchSharedAlbum, looksLikeAlbumLink } from '../lib/albumLink';
 import { photosConfigured, photosSignedIn, pickFromGooglePhotos, signInToPhotos } from '../lib/gphotos';
 
 type Entry = Parameters<typeof loadFiles>[0][number];
@@ -35,6 +36,23 @@ export function ImportView() {
   const [error, setError] = useState('');
   const [gp, setGp] = useState<'idle' | 'ready' | 'picking'>('idle');
   const gpAbort = useRef<AbortController | null>(null);
+  const linkRef = useRef<HTMLInputElement>(null);
+  const [link, setLink] = useState('');
+  const [readingAlbum, setReadingAlbum] = useState(false);
+
+  const importLink = async (url = link) => {
+    if (!url.trim()) return linkRef.current?.focus();
+    setError('');
+    setReadingAlbum(true);
+    try {
+      const { entries } = await fetchSharedAlbum(url);
+      setReadingAlbum(false);
+      run(entries, 'photos');
+    } catch (e) {
+      setReadingAlbum(false);
+      setError(String((e as Error).message ?? e));
+    }
+  };
 
   const run = async (entries: Entry[], source: 'local' | 'drive' | 'photos') => {
     setError('');
@@ -61,6 +79,8 @@ export function ImportView() {
 
   const googlePhotos = async () => {
     setError('');
+    // Without Google sign-in configured, the shared-link route needs no setup at all.
+    if (!photosConfigured) return linkRef.current?.focus();
     // First tap signs in (Google's popup). The picker opens on the next tap, so the browser
     // treats it as a direct click and doesn't block the new tab.
     if (!photosSignedIn()) {
@@ -154,8 +174,6 @@ export function ImportView() {
               <button
                 className={`btn ${gp === 'ready' ? 'primary' : ''}`}
                 onClick={googlePhotos}
-                disabled={!photosConfigured}
-                title={photosConfigured ? '' : 'Add a Google client ID to enable (see README)'}
               >
                 {gp === 'ready' ? 'Open Google Photos →' : 'Google Photos'}
               </button>
@@ -168,6 +186,33 @@ export function ImportView() {
                 Google Drive
               </button>
             </div>
+            <form
+              className="link-row"
+              onSubmit={(e) => {
+                e.preventDefault();
+                importLink();
+              }}
+            >
+              <input
+                ref={linkRef}
+                type="url"
+                inputMode="url"
+                placeholder="Paste a Google Photos album link"
+                value={link}
+                onChange={(e) => setLink(e.target.value)}
+                onPaste={(e) => {
+                  const v = e.clipboardData.getData('text');
+                  if (looksLikeAlbumLink(v)) {
+                    e.preventDefault();
+                    setLink(v.trim());
+                    importLink(v);
+                  }
+                }}
+              />
+              <button className="btn sm" disabled={readingAlbum}>
+                {readingAlbum ? 'Reading…' : 'Import'}
+              </button>
+            </form>
             {error && <p style={{ color: 'var(--bad)', marginTop: 20, marginBottom: 0 }}>{error}</p>}
             <div className="foot mono">
               {photos.length ? (

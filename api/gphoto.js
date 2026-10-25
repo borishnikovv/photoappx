@@ -1,6 +1,6 @@
 // Relays a Google Photos image download for the browser, in case Google's image host refuses
-// cross-origin requests. Only Google's photo hosts are allowed, and the user's own token is
-// passed through; nothing is stored.
+// cross-origin requests. Only Google's photo hosts are allowed, and the user's own token (if any)
+// is passed through; nothing is stored.
 export const config = { runtime: 'edge' };
 
 export default async function handler(req) {
@@ -14,9 +14,10 @@ export default async function handler(req) {
   if (u.protocol !== 'https:' || !/(^|\.)googleusercontent\.com$/.test(u.hostname)) {
     return new Response('Forbidden host', { status: 403 });
   }
+  // Picker downloads carry the user's token; shared-album images (/pw/) are public and don't.
   const auth = req.headers.get('authorization');
-  if (!auth) return new Response('Missing token', { status: 401 });
-  const r = await fetch(u, { headers: { Authorization: auth } });
+  if (!auth && !u.pathname.startsWith('/pw/')) return new Response('Missing token', { status: 401 });
+  const r = await fetch(u, { headers: auth ? { Authorization: auth } : {} });
   return new Response(r.body, {
     status: r.status,
     headers: { 'Content-Type': r.headers.get('content-type') ?? 'image/jpeg', 'Cache-Control': 'private, no-store' },

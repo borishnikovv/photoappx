@@ -10,7 +10,7 @@ Everything runs **on your device**. No photos are uploaded anywhere.
 
 | Step | What happens |
 | --- | --- |
-| **01 Import** | Pick a folder, select photos, drop a folder, or import from **Google Photos** or Google Drive. HEIC is supported. |
+| **01 Import** | Pick a folder, select photos, drop a folder, paste a **Google Photos album link**, or sign in to Google Photos or Google Drive. HEIC is supported. |
 | **02 Curate** | Each photo is scored on focus, exposure, faces (blinks, cut-off faces, expression), duplicates/bursts, and an on-device CLIP "art director" that judges candid/documentary/artful vs. posed, cliché, screenshot, distorted. Every photo gets plain-language reasons. Picks are ordered with a hero opener, then by **Story** (chronological) or **Color flow**. |
 | **03 Compose** | Three layout variants (Balanced, Cinematic, Gallery) from a template library: full bleed, framed, off-center, stacked and staggered pairs, film strip, panoramas over 2–3 slides, inset on a panorama, corner inset, offset across the seam, overlap, spill-over. Faces are kept off slide seams automatically. Drag to move frames (with snapping to seams and margins), pan/zoom photos, toggle borders and shadows, swap photos, reorder or re-roll any section, and preview it in a swipeable Instagram mock. |
 | **04 Export** | Full-resolution 1080 × 1350 JPEGs, as a .zip, or **Save to Photos** on a phone. Post them in order and the seams line up. |
@@ -40,9 +40,16 @@ Open http://localhost:5173.
 
 On your phone, open the URL and choose **Share → Add to Home Screen** to install it as an app.
 
-## Google Photos setup (one-time, about 5 minutes)
+## Google Photos: shared album link (no setup)
 
-Google Photos only needs **one** value: a Google client ID. You don't need an API key.
+1. In Google Photos, open an album and tap **Share → Create link** (or copy its existing link).
+2. In Seam, paste the link into **Paste a Google Photos album link**. It imports right away.
+
+The album page is read by `api/gphotos-album.js` on Vercel, which only talks to Google Photos. Google has no official API for shared links, so this relies on the album page's current format. If Google changes that format, use the sign-in option below. Capture dates aren't on the shared page, so photos keep the album's order.
+
+## Google Photos sign-in (optional, about 5 minutes)
+
+Sign-in lets you pick any photos from your library, not just shared albums. It only needs **one** value: a Google client ID. You don't need an API key.
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a project (any name).
 2. Go to **APIs & Services → Library**, search for **Google Photos Picker API**, and click **Enable**.
