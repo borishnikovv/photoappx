@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { useStore } from '../store';
 import { loadFiles } from '../lib/importer';
 import { driveConfigured, pickFromDrive } from '../lib/drive';
-import { fetchSharedAlbum, looksLikeAlbumLink } from '../lib/albumLink';
+import { extractAlbumLink, fetchSharedAlbum } from '../lib/albumLink';
 import { photosConfigured, photosSignedIn, pickFromGooglePhotos, signInToPhotos } from '../lib/gphotos';
 
 type Entry = Parameters<typeof loadFiles>[0][number];
@@ -187,6 +187,7 @@ export function ImportView() {
               </button>
             </div>
             <form
+              noValidate
               className="link-row"
               onSubmit={(e) => {
                 e.preventDefault();
@@ -195,17 +196,21 @@ export function ImportView() {
             >
               <input
                 ref={linkRef}
-                type="url"
+                type="text"
                 inputMode="url"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 placeholder="Paste a Google Photos album link"
                 value={link}
                 onChange={(e) => setLink(e.target.value)}
                 onPaste={(e) => {
                   const v = e.clipboardData.getData('text');
-                  if (looksLikeAlbumLink(v)) {
+                  const found = extractAlbumLink(v);
+                  if (found) {
                     e.preventDefault();
-                    setLink(v.trim());
-                    importLink(v);
+                    setLink(found);
+                    importLink(found);
                   }
                 }}
               />

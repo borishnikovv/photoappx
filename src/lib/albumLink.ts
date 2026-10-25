@@ -2,11 +2,21 @@
 // The album page is read by api/gphotos-album.js (browsers can't fetch it directly).
 import type { DriveEntry } from './drive';
 
-export const looksLikeAlbumLink = (s: string) => /^https:\/\/(photos\.app\.goo\.gl|goo\.gl|photos\.google\.com)\//.test(s.trim());
+const LINK_RE = /https?:\/\/(?:photos\.app\.goo\.gl|goo\.gl|photos\.google\.com)\/[^\s"'<>]+/;
 
-export async function fetchSharedAlbum(link: string): Promise<{ title: string; entries: DriveEntry[] }> {
-  const r = await fetch(`/api/gphotos-album?url=${encodeURIComponent(link.trim())}`);
-  const body = await r.json().catch(() => ({ error: `Couldn’t read the album (${r.status}).` }));
+/** Pulls an album link out of whatever was pasted (quotes, spaces, surrounding text). */
+export const extractAlbumLink = (s: string) => s.match(LINK_RE)?.[0].replace(/^http:/, 'https:') ?? null;
+
+export async function fetchSharedAlbum(text: string): Promise<{ title: string; entries: DriveEntry[] }> {
+  const link = extractAlbumLink(text);
+  if (!link) throw new Error('Paste a Google Photos album link, like https://photos.app.goo.gl/…');
+  const r = await fetch(`/api/gphotos-album?url=${encodeURIComponent(link)}`);
+  const body = await r.json().catch(() => ({
+    error:
+      r.status === 404
+        ? 'Album links need the deployed site (Vercel): the album reader isn’t available here.'
+        : `Couldn’t read the album (error ${r.status}).`,
+  }));
   if (!r.ok) throw new Error(body.error);
   // No capture dates on the shared page, so keep the album's own order.
   const base = Date.now() - body.photos.length * 1000;
