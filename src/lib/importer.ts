@@ -82,15 +82,16 @@ export async function loadFiles(
 }
 
 /** Cached mid-resolution previews for the editor, so the DOM never holds full-size originals. */
-const previews = new Map<string, Promise<string>>();
+const previews = new WeakMap<Blob, Promise<string>>();
 export function previewUrl(p: Photo) {
-  let u = previews.get(p.id);
+  // Keyed by file so a straightened (replaced) image gets a fresh preview.
+  let u = previews.get(p.file);
   if (!u) {
     u = downscale(p.file, 1800, 0.88).then((s) => {
       s.bmp.close();
       return URL.createObjectURL(s.blob);
     });
-    previews.set(p.id, u);
+    previews.set(p.file, u);
   }
   return u;
 }

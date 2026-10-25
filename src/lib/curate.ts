@@ -1,4 +1,4 @@
-import type { Analysis, FaceBox, Photo } from '../types';
+import type { Analysis, Decision, FaceBox, Photo } from '../types';
 import type { TechResult } from '../workers/technical.worker';
 import { detectFaces } from './faces';
 import { photoOrientation } from './geometry';
@@ -61,6 +61,16 @@ function clip(onModel: (p: number) => void) {
 }
 
 const thumbBlob = (p: Photo) => fetch(p.thumb).then((r) => r.blob());
+
+/** One-off technical measurement, e.g. to check a straightened photo is now level. */
+export async function measure(blob: Blob): Promise<TechResult | null> {
+  const one = pool<TechResult>(() => new Worker(new URL('../workers/technical.worker.ts', import.meta.url), { type: 'module' }), 1);
+  try {
+    return await one.run('m', blob);
+  } finally {
+    one.stop();
+  }
+}
 
 export async function analyzeAll(photos: Photo[], onProgress: (p: Progress) => void, onPhoto: (id: string, a: Analysis) => void) {
   const todo = photos.filter((p) => !p.analysis);
@@ -169,6 +179,8 @@ function score(p: Photo, t: TechResult, c: ClipResult | null, faces?: FaceBox[])
     style: c?.style,
     faces,
     score: Math.round(Math.min(1, Math.max(0, s)) * 100 * (reject ? 0.5 : 1)),
+    tilt: t.tilt,
+    tiltConfidence: t.tiltConfidence,
     reject,
     reasons: [...new Set(reasons)],
   };
@@ -254,6 +266,43 @@ export function sequence(chosen: Photo[], seq: Sequence): Photo[] {
       if (d < bd) [bi, bd] = [i, d];
     });
     out.push(rest.splice(bi, 1)[0]);
+  }
+  return out;
+}
+
+/** Tilt worth fixing: clearly off level, but not so far it's probably a deliberate Dutch angle. */
+export function tiltVerdict(a?: Analysis): 'fix' | 'ask' | null {
+  if (!a?.tilt || a.tiltConfidence == null) return null;
+  const t = Math.abs(a.tilt);
+  if (t < 0.8 || t > 9) return null;
+  if (a.tiltConfidence >= 0.45) return 'fix';
+  if (a.tiltConfidence >= 0.25 && t >= 1.2) return 'ask';
+  return null;
+}
+
+/**
+ * Questions for the user where the scores alone can't decide: near-tied similar shots among the
+ * picks, and tilts that might be intentional.
+ */
+export function buildDecisions(photos: Photo[], picks: string[]): Decision[] {
+  const out: Decision[] = [];
+  const picked = new Set(picks);
+  const groups = new Map<string, Photo[]>();
+  for (const p of photos) {
+    const g = p.analysis?.groupId;
+    if (g && !p.analysis!.reject) groups.set(g, [...(groups.get(g) ?? []), p]);
+  }
+  for (const [groupId, ps] of groups) {
+    if (ps.length < 2 || !ps.some((p) => picked.has(p.id))) continue;
+    const ranked = [...ps].sort((a, b) => b.analysis!.score - a.analysis!.score);
+    const top = ranked[0].analysis!.score;
+    const close = ranked.filter((p) => top - p.analysis!.score <= 6).slice(0, 4);
+    if (close.length > 1) out.push({ id: `pick_${groupId}`, kind: 'pick', groupId, options: close.map((p) => p.id), suggested: ranked[0].id });
+  }
+  for (const id of picks) {
+    const p = photos.find((x) => x.id === id);
+    if (p && !p.straightened && tiltVerdict(p.analysis) === 'ask')
+      out.push({ id: `tilt_${id}`, kind: 'straighten', photoId: id, angle: p.analysis!.tilt! });
   }
   return out;
 }

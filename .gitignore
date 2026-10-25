@@ -4,3 +4,4 @@ public/mediapipe-wasm
 .env
 .env.local
 .vercel
+*.tsbuildinfo

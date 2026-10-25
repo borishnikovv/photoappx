@@ -92,7 +92,7 @@ export function ComposeView() {
     return sec && it ? { sec, it } : null;
   }, [selected, c]);
 
-  const used = useMemo(() => new Set(c?.sections.flatMap((x) => x.photoIds)), [c]);
+  const used = useMemo(() => new Set(c?.sections.flatMap((x) => x.items.map((i) => i.photoId))), [c]);
   const tray = useMemo(() => {
     const extra = photos
       .filter((p) => !picks.includes(p.id) && p.analysis && !p.analysis.reject)
@@ -147,7 +147,13 @@ export function ComposeView() {
           <span className="mono faint">View</span>
           <input type="range" min={0.3} max={1} step={0.01} value={zoom} onChange={(e) => setZoom(+e.target.value)} style={{ width: 80 }} />
         </div>
-        <span className="mono faint">{slideCount(c)} slides</span>
+        <div className="field" title="Instagram allows up to 20">
+          <span className="mono faint">Slides</span>
+          <input type="range" min={4} max={20} value={style.maxSlides} onChange={(e) => setStyle({ maxSlides: +e.target.value })} style={{ width: 80 }} />
+          <span className="mono" style={{ width: 52 }}>
+            {slideCount(c)}/{style.maxSlides}
+          </span>
+        </div>
         <button className="btn sm" onClick={() => setPreview(true)}>
           Preview
         </button>
@@ -234,6 +240,9 @@ export function ComposeView() {
               }
             >
               Bring forward
+            </button>
+            <button className="btn sm ghost" onClick={() => s.removeItem(sel.sec.id, sel.it.id)}>
+              Remove
             </button>
             <div className="sep" />
             <span className="mono faint">Swap with</span>

@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import type { Photo } from '../types';
+import { AskModal } from './AskModal';
+import { tiltVerdict } from '../lib/curate';
 
 type Filter = 'all' | 'picks' | 'out';
 
@@ -19,7 +21,14 @@ function Meter({ label, v }: { label: string; v?: number }) {
 
 function Detail({ p, picked }: { p: Photo; picked: boolean }) {
   const togglePick = useStore((s) => s.togglePick);
+  const setStraight = useStore((s) => s.setStraight);
+  const [busy, setBusy] = useState(false);
   const a = p.analysis;
+  const level = async (on: boolean) => {
+    setBusy(true);
+    await setStraight(p.id, on);
+    setBusy(false);
+  };
   return (
     <div className="detail">
       <img src={p.thumb} alt="" />
@@ -36,6 +45,16 @@ function Detail({ p, picked }: { p: Photo; picked: boolean }) {
       </div>
       {a ? (
         <>
+          {(p.straightened != null || tiltVerdict(a)) && (
+            <div className="ask-banner" style={{ marginTop: 12 }}>
+              <span style={{ flex: 1 }}>
+                {p.straightened != null ? `Straightened ${Math.abs(p.straightened).toFixed(1)}°` : `Looks ${Math.abs(a.tilt!).toFixed(1)}° off level`}
+              </span>
+              <button className="btn sm" disabled={busy} onClick={() => level(p.straightened == null)}>
+                {p.straightened != null ? 'Undo' : 'Straighten'}
+              </button>
+            </div>
+          )}
           <ul className="reasons">
             {a.reasons.length ? a.reasons.map((r) => <li key={r}>{r}</li>) : <li>Solid, unremarkable frame</li>}
           </ul>
@@ -60,7 +79,16 @@ function Detail({ p, picked }: { p: Photo; picked: boolean }) {
 }
 
 export function CurateView() {
-  const { photos, picks, analyzing, smartMode, count, setCount, seq, setSeq, togglePick, movePick, compose, analyze, autoPick } = useStore();
+  const { photos, picks, analyzing, smartMode, count, setCount, seq, setSeq, togglePick, movePick, compose, analyze, autoPick, decisions, askOpen, setAskOpen } =
+    useStore();
+  const [composeAfter, setComposeAfter] = useState(false);
+  // Open questions get answered before composing; the user can still defer them.
+  const goCompose = () => {
+    if (decisions.length) {
+      setComposeAfter(true);
+      setAskOpen(true);
+    } else compose(true);
+  };
   const [filter, setFilter] = useState<Filter>('all');
   const [focus, setFocus] = useState<string | null>(null);
   const [drag, setDrag] = useState<string | null>(null);
@@ -88,7 +116,7 @@ export function CurateView() {
           <div className="grow" />
           <div className="field">
             <span className="mono faint">Photos</span>
-            <input type="range" min={3} max={30} value={count} onChange={(e) => setCount(+e.target.value)} />
+            <input type="range" min={3} max={60} value={count} onChange={(e) => setCount(+e.target.value)} />
             <span className="mono" style={{ width: 18 }}>
               {count}
             </span>
@@ -153,9 +181,19 @@ export function CurateView() {
                   : 'Opening shot first. Drag to reorder, double-click a tile to add or remove.'
                 : 'Review the folder to get picks.'}
             </p>
+            {reviewed && decisions.length > 0 && (
+              <div className="ask-banner" style={{ marginBottom: 12 }}>
+                <span style={{ flex: 1 }}>
+                  {decisions.length} {decisions.length === 1 ? 'call' : 'calls'} I'd like you to make
+                </span>
+                <button className="btn sm primary" onClick={() => setAskOpen(true)}>
+                  Choose
+                </button>
+              </div>
+            )}
             {reviewed ? (
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn primary" disabled={picks.length < 1} onClick={() => compose(true)}>
+                <button className="btn primary" disabled={picks.length < 1} onClick={goCompose}>
                   Compose
                 </button>
                 <button className="btn" onClick={autoPick}>
@@ -197,10 +235,21 @@ export function CurateView() {
           <button className="btn sm" onClick={autoPick}>
             Re-pick
           </button>
-          <button className="btn sm primary" disabled={!picks.length} onClick={() => compose(true)}>
+          <button className="btn sm primary" disabled={!picks.length} onClick={goCompose}>
             Compose
           </button>
         </div>
+      )}
+      {askOpen && (
+        <AskModal
+          onDone={() => {
+            setAskOpen(false);
+            if (composeAfter) {
+              setComposeAfter(false);
+              compose(true);
+            }
+          }}
+        />
       )}
     </div>
   );

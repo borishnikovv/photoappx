@@ -31,6 +31,8 @@ export interface Analysis {
   reasons: string[];
   groupId?: string;
   groupBest?: boolean;
+  tilt?: number;
+  tiltConfidence?: number;
 }
 
 export interface Photo {
@@ -44,7 +46,14 @@ export interface Photo {
   camera?: string;
   thumb: string;
   analysis?: Analysis;
+  /** Degrees this photo was rotated to level it, with the untouched original kept for undo. */
+  straightened?: number;
+  original?: { file: Blob; width: number; height: number; thumb: string; faces?: FaceBox[] };
 }
+
+export type Decision =
+  | { id: string; kind: 'pick'; groupId: string; options: string[]; suggested: string }
+  | { id: string; kind: 'straighten'; photoId: string; angle: number };
 
 export interface Crop {
   /** Focal center of the visible window, normalized in photo space. */
@@ -66,6 +75,8 @@ export interface Item {
   border: number;
   shadow: boolean;
   z: number;
+  /** A photo laid on top of a slide edge, so the swipe reads as one continuous canvas. */
+  bridge?: boolean;
 }
 
 export interface Section {

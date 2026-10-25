@@ -12,6 +12,9 @@ export interface TechResult {
   hash: string;
   flatness: number;
   coverage: number;
+  /** Degrees the scene's horizon/verticals are rotated (y-down), and how sure we are (0..1). */
+  tilt: number;
+  tiltConfidence: number;
   notes: string[];
 }
 
@@ -114,10 +117,91 @@ function analyze(img: ImageData): Omit<TechResult, 'id'> {
     lab: [L / n, A / n, B / n],
     palette,
     hash: dhash(lum, w, h),
+    ...estimateTilt(lum, w, h),
     flatness: flat / n,
     coverage,
     notes,
   };
+}
+
+/**
+ * Tilt from edge directions: strong edges near horizontal (and, weighted less because of
+ * perspective, near vertical) vote for their angle. A tight peak away from 0° means the camera
+ * was rolled; a flat histogram means an organic scene with no reliable reference.
+ */
+function estimateTilt(lum: Float32Array, w: number, h: number) {
+  const RANGE = 10, BIN = 0.25, N = (2 * RANGE) / BIN;
+  const n = w * h;
+  // Structure tensor (gradient products averaged over a 5×5 window): orientation estimates that
+  // don't snap toward the pixel grid the way single-pixel gradients do.
+  const jxx = new Float64Array(n), jyy = new Float64Array(n), jxy = new Float64Array(n);
+  for (let y = 1; y < h - 1; y++)
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gx = lum[i - w + 1] + 2 * lum[i + 1] + lum[i + w + 1] - lum[i - w - 1] - 2 * lum[i - 1] - lum[i + w - 1];
+      const gy = lum[i + w - 1] + 2 * lum[i + w] + lum[i + w + 1] - lum[i - w - 1] - 2 * lum[i - w] - lum[i - w + 1];
+      jxx[i] = gx * gx; jyy[i] = gy * gy; jxy[i] = gx * gy;
+    }
+  const box = (src: Float64Array) => {
+    const I = new Float64Array((w + 1) * (h + 1));
+    for (let y = 0; y < h; y++) {
+      let row = 0;
+      for (let x = 0; x < w; x++) {
+        row += src[y * w + x];
+        I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row;
+      }
+    }
+    return (x0: number, y0: number, x1: number, y1: number) =>
+      I[y1 * (w + 1) + x1] - I[y0 * (w + 1) + x1] - I[y1 * (w + 1) + x0] + I[y0 * (w + 1) + x0];
+  };
+  const Sxx = box(jxx), Syy = box(jyy), Sxy = box(jxy);
+  const R = 2;
+  const energy: number[] = [];
+  const cells: [number, number][] = [];
+  for (let y = R + 1; y < h - R - 1; y += 2)
+    for (let x = R + 1; x < w - R - 1; x += 2) {
+      const xx = Sxx(x - R, y - R, x + R + 1, y + R + 1), yy = Syy(x - R, y - R, x + R + 1, y + R + 1), xy = Sxy(x - R, y - R, x + R + 1, y + R + 1);
+      const tr = xx + yy;
+      if (tr <= 0) continue;
+      const coherence = Math.sqrt((xx - yy) ** 2 + 4 * xy * xy) / tr;
+      if (coherence < 0.75) continue;
+      energy.push(tr);
+      // Dominant gradient direction; the edge runs perpendicular to it.
+      cells.push([tr, (0.5 * Math.atan2(2 * xy, xx - yy) * 180) / Math.PI - 90]);
+    }
+  if (!cells.length) return { tilt: 0, tiltConfidence: 0 };
+  energy.sort((a, b) => a - b);
+  const thresh = energy[Math.floor(energy.length * 0.7)];
+  const hist = new Float64Array(N);
+  let total = 0, windowed = 0;
+  for (const [tr, e0] of cells) {
+    if (tr < thresh) continue;
+    const m = Math.sqrt(tr);
+    total += m;
+    let e = e0;
+    while (e <= -90) e += 180;
+    while (e > 90) e -= 180;
+    let dev: number, wt: number;
+    if (Math.abs(e) < RANGE) [dev, wt] = [e, 1];
+    else if (Math.abs(e) > 90 - RANGE) [dev, wt] = [e - Math.sign(e) * 90, 0.6];
+    else continue;
+    hist[Math.min(N - 1, Math.floor((dev + RANGE) / BIN))] += m * wt;
+    windowed += m * wt;
+  }
+  if (!windowed) return { tilt: 0, tiltConfidence: 0 };
+  const sm = hist.map((v, i) => (hist[i - 1] ?? v) + 2 * v + (hist[i + 1] ?? v));
+  let peak = 0;
+  for (let i = 1; i < N; i++) if (sm[i] > sm[peak]) peak = i;
+  let near = 0, acc = 0;
+  for (let i = Math.max(0, peak - 3); i <= Math.min(N - 1, peak + 3); i++) {
+    near += hist[i];
+    acc += hist[i] * (i * BIN - RANGE + BIN / 2);
+  }
+  const tilt = acc / Math.max(1e-9, near);
+  // Concentrated peak × how much of the image's structure is straight lines at all.
+  const concentration = near / windowed;
+  const structure = windowed / total;
+  return { tilt, tiltConfidence: Math.min(1, concentration * 1.6) * Math.min(1, structure * 1.8) };
 }
 
 /** 64-bit difference hash, as hex, for near-duplicate detection. */

@@ -295,5 +295,70 @@ export function compatibleTemplates(ps: Photo[], o: StyleOptions) {
 
 export function rebuildSection(sec: Section, t: Template, ps: Photo[], o: StyleOptions, seed: number): Section {
   const ordered = assign(t, ps) ?? ps;
-  return { ...buildSection(t, ordered, rng(seed), o), id: sec.id };
+  const built = buildSection(t, ordered, rng(seed), o);
+  // Photos bridging into the next slide belong to the seam, not the layout, so they survive a re-roll.
+  return { ...built, id: sec.id, items: [...built.items, ...(sec.items?.filter((i) => i.bridge) ?? [])] };
+}
+
+/** Face rectangles of an item, in canvas coordinates. */
+function facesOnCanvas(it: Item & { ax: number }, p: Photo) {
+  const { sx, sy, sw, sh } = sourceRect(p, it);
+  return (p.analysis?.faces ?? []).map((f) => ({
+    x0: it.ax + ((f.x - sx) / sw) * it.w,
+    x1: it.ax + ((f.x + f.w - sx) / sw) * it.w,
+    y0: it.y + ((f.y - sy) / sh) * it.h,
+    y1: it.y + ((f.y + f.h - sy) / sh) * it.h,
+  }));
+}
+
+/**
+ * The SCRL move: wherever nothing crosses the cut between two slides, lay a framed photo across
+ * it, so swiping reads as one continuous canvas. Placed to avoid covering faces underneath.
+ */
+export function addBridges(c: Carousel, reserve: Photo[], byId: Map<string, Photo>, seed: number): Carousel {
+  const r = rng(seed ^ 0x5eed);
+  const pool = [...reserve];
+  const sections = c.sections.map((s) => ({ ...s, items: s.items.filter((i) => !i.bridge) }));
+  const starts: number[] = [];
+  let n = 0;
+  for (const s of sections) {
+    starts.push(n);
+    n += s.span;
+  }
+  const abs = () =>
+    sections.flatMap((s, si) => s.items.map((it) => ({ ...it, ax: starts[si] * W + it.x })));
+  let flip = r() > 0.5;
+  for (let k = 1; k < n; k++) {
+    const seam = k * W;
+    if (abs().some((it) => it.ax < seam - 60 && it.ax + it.w > seam + 60)) continue;
+    const owner = starts.findIndex((st, i) => st + sections[i].span === k);
+    if (owner < 0 || !pool.length) continue;
+    // Smaller, taller frames sit best on a seam; fall back to whatever is left.
+    const pi = Math.max(0, pool.findIndex((p) => ['portrait', 'square'].includes(photoOrientation(p))));
+    const p = pool.splice(pi, 1)[0];
+    const wide = ['landscape', 'pano'].includes(photoOrientation(p));
+    const box = fitBox(aspect(p), wide ? 540 + r() * 60 : 380 + r() * 90, wide ? 420 : 620);
+    const near = abs().filter((it) => it.ax < seam + box.w && it.ax + it.w > seam - box.w);
+    const faces = near.flatMap((it) => facesOnCanvas(it, byId.get(it.photoId)!));
+    // Other framed/floating photos: covering one makes a slide look cluttered. Backgrounds are fine.
+    const frames = near
+      .filter((it) => !(it.w >= W && it.h >= H))
+      .map((it) => ({ x0: it.ax - 30, x1: it.ax + it.w + 30, y0: it.y - 30, y1: it.y + it.h + 30, wt: it.z > 0 || it.bridge ? 4 : 1 }));
+    const x = seam - box.w / 2 + (r() - 0.5) * 100;
+    const overlap = (y: number, q: { x0: number; x1: number; y0: number; y1: number }) =>
+      Math.max(0, Math.min(x + box.w, q.x1) - Math.max(x, q.x0)) * Math.max(0, Math.min(y + box.h, q.y1) - Math.max(y, q.y0));
+    const ys = [110, 300, (H - box.h) / 2, H - box.h - 300, H - box.h - 110].map((y) => Math.max(60, Math.min(H - box.h - 60, y)));
+    const cost = (y: number, i: number) =>
+      faces.reduce((c2, f) => c2 + 3 * overlap(y, f), 0) +
+      frames.reduce((c2, f) => c2 + f.wt * overlap(y, f), 0) +
+      // Prefer alternating high/low along the carousel for rhythm.
+      (i === 2 ? 4000 : 0) + ((flip ? i < 2 : i > 2) ? 0 : 3000);
+    const y = ys.map((yy, i) => [yy, cost(yy, i)] as const).sort((a, b) => a[1] - b[1])[0][0];
+    flip = !flip;
+    sections[owner].items.push({
+      ...mk(p, x - starts[owner] * W, y, box.w, box.h, { border: 12, shadow: true, z: 5, bridge: true }),
+      id: uid('it'),
+    });
+  }
+  return { ...c, sections };
 }
