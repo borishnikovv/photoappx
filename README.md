@@ -58,7 +58,7 @@ Sign-in lets you pick any photos from your library, not just shared albums. It o
    - Under **Audience → Test users**, add your own Google account.
 4. Go to **APIs & Services → Credentials → Create credentials → OAuth client ID**:
    - Type: **Web application**.
-   - Under **Authorized JavaScript origins**, add your Vercel URL (e.g. `https://photoappx.vercel.app`). Add `http://localhost:5173` too if you run it locally.
+   - Under **Authorized JavaScript origins**, add your Vercel URL (e.g. `https://seamapp.vercel.app`). Add `http://localhost:5173` too if you run it locally.
    - Copy the client ID (it ends in `.apps.googleusercontent.com`).
 5. In Vercel, go to **Project → Settings → Environment Variables**, add `VITE_GOOGLE_CLIENT_ID` with that value, then **Redeploy**.
 
